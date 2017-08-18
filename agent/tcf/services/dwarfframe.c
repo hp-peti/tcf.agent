@@ -278,6 +278,16 @@ static RegisterRules * get_reg(StackFrameRegisters * regs, int reg) {
                 regs->regs[n].offset = 30; /* LR */
             }
             break;
+        case EM_SPARC:                                                                  /* MOVIDIUS */
+            min_reg_cnt = 32;                                                           /* MOVIDIUS */
+#if defined(MV_DISABLE_CFA_GNU_WINDOW_SAVE) || defined(MV_SPARC_DEFAULT_CFA_REGS_INIT)  /* MOVIDIUS */
+            if (regs->regs[n].rule == 0 && regs->regs[n].offset == 0)                   /* MOVIDIUS */
+            {                                                                           /* MOVIDIUS */
+                regs->regs[n].rule = RULE_SAME_VALUE;                                   /* MOVIDIUS */
+                regs->regs[n].offset = n;                                               /* MOVIDIUS */
+            }                                                                           /* MOVIDIUS */
+#endif                                                                                  /* MOVIDIUS */
+            break;                                                                      /* MOVIDIUS */
         }
     }
     return regs->regs + reg;
@@ -515,6 +525,9 @@ static void exec_stack_frame_instruction(U8_T func_addr) {
         dio_Skip(reg->offset);
         break;
     case CFA_CFA_GNU_window_save:
+#ifdef  MV_DISABLE_CFA_GNU_WINDOW_SAVE                                                             /* MOVIDIUS */
+        str_exception(ERR_INV_DWARF, "CFA_GNU_window_save not supported");                         /* MOVIDIUS */
+#else                                                                                              /* MOVIDIUS */
         /* SPARC-specific code */
         for (n = 8; n < 16; n++) {
             reg = get_reg(&frame_regs, n);
@@ -526,6 +539,7 @@ static void exec_stack_frame_instruction(U8_T func_addr) {
             reg->rule = RULE_OFFSET;
             reg->offset = (n - 16) * (rules.reg_id_scope.machine == EM_SPARCV9 ? 8 : 4);
         }
+#endif                                                                                             /* MOVIDIUS */
         break;
     case CFA_GNU_args_size:
         /* This instruction specifies the total size of the arguments
@@ -1232,7 +1246,15 @@ static void create_search_index(DWARFCache * cache, FrameInfoIndex * index) {
             ELF_Section * sec = NULL;
             FrameInfoRange * range = NULL;
             if (rules.eh_frame) cie_ref = ref_pos - cie_ref;
-            if (cie_ref != rules.cie_pos) read_frame_cie(fde_pos, cie_ref);
+            if (cie_ref != rules.cie_pos)                          /* MOVIDIUS */
+            {                                                      /* MOVIDIUS */
+                /* workaround for FDEs with invalid CIE */         /* MOVIDIUS */
+                if (cie_ref > rules.section->size) {               /* MOVIDIUS */
+                    dio_SetPos(fde_end);                           /* MOVIDIUS */
+                    continue;                                      /* MOVIDIUS */
+                }                                                  /* MOVIDIUS */
+                read_frame_cie(fde_pos, cie_ref);                  /* MOVIDIUS */
+            }                                                      /* MOVIDIUS */
             if (index->mFrameInfoRangesCnt >= index->mFrameInfoRangesMax) {
                 index->mFrameInfoRangesMax += 512;
                 if (index->mFrameInfoRanges == NULL) index->mFrameInfoRangesMax += (unsigned)(section->size / 32);

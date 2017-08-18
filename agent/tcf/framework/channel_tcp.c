@@ -1260,7 +1260,12 @@ ChannelServer * channel_tcp_server(PeerServer * ps) {
         }
 #if !(defined(_WIN32) || defined(__CYGWIN__))
         {
-            const int i = 1;
+            const int i = -1;                                                                                /* MOVIDIUS */
+            const int zero = 0;                                                                              /* MOVIDIUS */
+            if (setsockopt(sock, SOL_SOCKET, SO_LINGER, (char *)&zero, sizeof(zero)) < 0) {                  /* MOVIDIUS */
+                trace(LOG_ALWAYS, "Socket setsockopt error (SO_LINGER to 0): %s", errno_to_str(error));      /* MOVIDIUS */
+                errno = 0;                                                                                   /* MOVIDIUS */
+            }                                                                                                /* MOVIDIUS */
             if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (char *)&i, sizeof(i)) < 0) {
                 error = errno;
                 reason = "setsockopt";

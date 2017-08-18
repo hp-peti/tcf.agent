@@ -3172,6 +3172,10 @@ int get_symbol_name(const Symbol * sym, char ** name) {
         if (sym->dimension == 0) {
             size_t i;
             unpack_elf_symbol_info(sym->tbl, sym->index, &sym_info);
+            if (sym_info.name == NULL) {            /* MOVIDIUS */
+                *name = NULL;                       /* MOVIDIUS */
+                return 0;                           /* MOVIDIUS */
+            }                                       /* MOVIDIUS */
             for (i = 0;; i++) {
                 if (sym_info.name[i] == 0) {
                     *name = sym_info.name;

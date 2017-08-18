@@ -111,6 +111,9 @@ int get_next_stack_frame(StackFrame * frame, StackFrame * down) {
         error = errno;
     }
     else if (info != NULL) {
+#ifdef WALK_STACK_BEGIN_FRAME               /* MOVIDIUS */
+        WALK_STACK_BEGIN_FRAME;             /* MOVIDIUS */
+#endif                                      /* MOVIDIUS */
         Trap trap;
         if (set_trap(&trap)) {
             int i;
@@ -192,6 +195,9 @@ int get_next_stack_frame(StackFrame * frame, StackFrame * down) {
             error = trap.error;
             frame->fp = 0;
         }
+#ifdef WALK_STACK_END_FRAME                 /* MOVIDIUS */
+        WALK_STACK_END_FRAME;               /* MOVIDIUS */
+#endif                                      /* MOVIDIUS */
     }
     if (error) {
         free_frame(down);

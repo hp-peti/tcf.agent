@@ -137,7 +137,8 @@ void context_clear_memory_map(MemoryMap * map) {
             loc_free(x);
         }
     }
-    memset(map->regions, 0, sizeof(MemoryRegion) * map->region_max);
+    if (map->regions != NULL)								/* MOVIDIUS */
+        memset(map->regions, 0, sizeof(MemoryRegion) * map->region_max);                /* MOVIDIUS */
     map->region_cnt = 0;
 }
 

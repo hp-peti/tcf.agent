@@ -43,6 +43,8 @@ static void notify_all(void * arg) {
         trace(LOG_SHUTDOWN, "shutdown complete");
         cancel_event_loop();
         shutdown_complete_handler(shutdown_complete_arg);
+        shutdown_complete_handler = NULL; // MOVIDIUS
+        shutdown_complete_arg = NULL;     // MOVIDIUS
         return;
     }
 

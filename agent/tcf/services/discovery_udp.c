@@ -873,7 +873,7 @@ static void local_peer_changed(PeerServer * ps, int type, void * arg) {
 
 int discovery_start_udp(void) {
     int error;
-    assert(!discovery_stopped);
+    discovery_stopped = 0; // MOVIDIUS   //  assert(!discovery_stopped);
     error = create_server_socket();
     if (error) return error;
     peer_server_add_listener(local_peer_changed, NULL);
@@ -893,8 +893,10 @@ int discovery_stop_udp(void) {
     if (!discovery_stopped) {
         udp_send_peer_removed();
         discovery_stopped = 1;
+        closesocket(udp_server_socket); /* MOVIDIUS */
         if (slave_info != NULL) {
             loc_free(slave_info);
+            slave_info = NULL; /*  MOVIDIUS */
             slave_cnt = 0;
             slave_max = 0;
         }

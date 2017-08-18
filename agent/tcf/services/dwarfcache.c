@@ -1204,6 +1204,11 @@ static int cmp_pub_objects(ObjectInfo * x, ObjectInfo * y) {
     case TAG_fund_type:
         if (x->u.mFundType != y->u.mFundType) return 0;
         break;
+    case TAG_variable:                                                      // MOVIDIUS
+        if ((x->mFlags & DOIF_location) || (y->mFlags & DOIF_location))  {  // MOVIDIUS
+            return 0;                                                       // MOVIDIUS
+        }                                                                   // MOVIDIUS
+        break;                                                              // MOVIDIUS
     }
     if (strcmp(x->mName, y->mName) != 0) return 0;
     return 1;

@@ -43,3 +43,7 @@
 /tests/test-dwarf/msvc/*.VC.db
 /tests/test-dwarf/msvc/*.sdf
 /tests/test-dwarf/msvc/.vs
+
+.project
+.cproject
+.settings

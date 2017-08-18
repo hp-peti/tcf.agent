@@ -321,6 +321,11 @@ int is_dispatch_thread(void) {
     return is_event_thread;
 }
 
+void set_current_thread_as_dispatch_thread() // MOVIDIUS
+{                                            // MOVIDIUS
+    event_thread = current_thread;           // MOVIDIUS
+}                                            // MOVIDIUS
+
 void ini_events_queue(void) {
     event_thread = current_thread;
     check_error(pthread_mutex_init(&event_lock, NULL));
@@ -351,8 +356,10 @@ void ini_events_queue(void) {
     exit_event = (event_node *)loc_alloc_zero(sizeof(event_node));
 }
 
+static void exit_event_handler(void * args);            // MOVIDIUS
 void cancel_event_loop(void) {
-    process_events = 0;
+    post_event(exit_event_handler, NULL);               // MOVIDIUS
+    //process_events = 0;                               // MOVIDIUS
 }
 
 static void exit_event_handler(void * args) {
