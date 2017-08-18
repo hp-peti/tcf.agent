@@ -489,7 +489,7 @@ static void command_attach(char * token, Channel * c) {
     else {
         AttachDoneArgs * data = (AttachDoneArgs *)loc_alloc_zero(sizeof *data);
         data->c = c;
-        strcpy(data->token, token);
+        strlcpy(data->token, token, sizeof(data->token));
         if (context_attach(pid, attach_done, data, 0) == 0) {
             channel_lock_with_msg(c, PROCESSES[0]);
             return;
@@ -586,16 +586,8 @@ static void read_sigset_bit(InputStream * inp, void * args) {
 
 static void read_sigset(InputStream * inp, SigSet * set, int * not_null) {
     memset(set, 0, sizeof(SigSet));
-    if (json_peek(inp) == 'n') {
-        read_stream(inp);
-        json_test_char(inp, 'u');
-        json_test_char(inp, 'l');
-        json_test_char(inp, 'l');
-        *not_null = 0;
-    }
-    else if (json_peek(inp) == '[') {
-        json_read_array(inp, read_sigset_bit, set);
-        *not_null = 1;
+    if (json_peek(inp) == '[' || json_peek(inp) == 'n') {
+        *not_null = json_read_array(inp, read_sigset_bit, set);
     }
     else {
         unsigned bit;
@@ -1356,6 +1348,9 @@ static int start_process_imp(Channel * c, char ** envp, const char * dir, const 
         int p_out[2];
         int p_err[2];
 
+        p_inp[0] = p_inp[1] = -1;
+        p_out[0] = p_out[1] = -1;
+        p_err[0] = p_err[1] = -1;
         if (pipe(p_inp) < 0 || pipe(p_out) < 0 || pipe(p_err) < 0) err = errno;
 
         if (err == 0 && (p_inp[0] < 3 || p_out[1] < 3 || p_err[1] < 3)) {
@@ -1683,7 +1678,7 @@ static void command_start(char * token, Channel * c, void * x) {
             int mode = params.attach_mode;
             AttachDoneArgs * data = (AttachDoneArgs *)loc_alloc_zero(sizeof *data);
             data->c = c;
-            strcpy(data->token, token);
+            strlcpy(data->token, token, sizeof(data->token));
             data->set_dont_stop = params.set_dont_stop;
             data->set_dont_pass = params.set_dont_pass;
             sigset_copy(&data->sig_dont_stop, &params.sig_dont_stop);
