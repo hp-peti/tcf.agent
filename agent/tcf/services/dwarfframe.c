@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2014-2015 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007, 2017 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -196,12 +196,15 @@ static RegisterRules * get_reg(StackFrameRegisters * regs, int reg) {
             }
             break;
         case EM_ARM:
-            min_reg_cnt = 14;
+            min_reg_cnt = 129;
             if (n >= 4 && n <= 11) { /* Local variables */
                 regs->regs[n].rule = RULE_SAME_VALUE;
             }
             else if (n == 13) { /* Stack pointer */
                 regs->regs[n].rule = RULE_VAL_OFFSET;
+            }
+            else if (n == 128) { /* CPSR, it is needed for stack crawl */
+                regs->regs[n].rule = RULE_SAME_VALUE;
             }
             else if (n == rules.return_address_register) {
                 regs->regs[n].rule = RULE_REGISTER;
@@ -1040,8 +1043,8 @@ static void read_frame_cie(U8_T fde_pos, U8_T pos) {
     rules.cie_pos = pos;
     if (pos >= rules.section->size) {
         str_fmt_exception(ERR_INV_DWARF,
-            "Invalid CIE pointer 0x%" PRIX64
-            " in FDE at 0x%" PRIX64, pos, fde_pos);
+            "Invalid CIE pointer %#" PRIx64
+            " in FDE at %#" PRIx64, pos, fde_pos);
     }
     dio_SetPos(pos);
     cie_length = dio_ReadU4();
@@ -1232,8 +1235,8 @@ static void create_search_index(DWARFCache * cache, FrameInfoIndex * index) {
             }
             else {
                 str_fmt_exception(ERR_INV_DWARF,
-                    "Invalid length 0x%" PRIX64
-                    " in FDE at 0x%" PRIX64, fde_length, fde_pos);
+                    "Invalid length %#" PRIx64
+                    " in FDE at %#" PRIx64, fde_length, fde_pos);
             }
         }
         cie_ref = fde_dwarf64 ? dio_ReadU8() : dio_ReadU4();

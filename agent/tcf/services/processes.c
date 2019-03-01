@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2017 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2018 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -40,7 +40,6 @@
 #include <assert.h>
 #include <tcf/framework/mdep-fs.h>
 #include <tcf/framework/myalloc.h>
-#include <tcf/framework/protocol.h>
 #include <tcf/framework/trace.h>
 #include <tcf/framework/context.h>
 #include <tcf/framework/json.h>
@@ -715,6 +714,11 @@ static void command_terminate(char * token, Channel * c) {
     if (parent != 0) {
         err = ERR_INV_CONTEXT;
     }
+#if ENABLE_DebugContext
+    else if (is_attached(pid)) {
+        if (terminate_debug_context(id2ctx(id)) < 0) err = errno;
+    }
+#endif
     else {
 #if defined(_WIN32) || defined(__CYGWIN__)
         HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
@@ -873,6 +877,7 @@ static void process_exited(ChildProcess * prs) {
     semTake(prs_list_lock, WAIT_FOREVER);
 #endif
     list_remove(&prs->link);
+    broadcast_group_unlock(prs->bcg);
     if (prs->inp_struct) {
         ProcessInput * inp = prs->inp_struct;
         if (!inp->req_posted) {
@@ -1048,7 +1053,7 @@ static int setenv(const char * name, const char * val, int overwrite) {
     _putenv_s(name, val);
     return 0;
 }
-#elif defined(__MINGW32__)
+#elif defined(__MINGW32__) && __MINGW32_MAJOR_VERSION < 5
 static int setenv(const char * name, const char * val, int overwrite) {
     int len = strlen(name) + strlen(val) + 2;
     char * str = (char *)loc_alloc(len);
@@ -1219,6 +1224,7 @@ static int start_process_imp(Channel * c, char ** envp, const char * dir, const 
         (*prs)->pid = pid;
         (*prs)->tty = -1;
         (*prs)->bcg = c->bcg;
+        broadcast_group_lock(c->bcg);
         strlcpy((*prs)->service, params->service, sizeof((*prs)->service));
         (*prs)->inp_struct = write_process_input(*prs, fpipes[0][1]);
         (*prs)->out_struct = read_process_output(*prs, fpipes[1][0]);
@@ -1312,6 +1318,7 @@ static int start_process_imp(Channel * c, char ** envp, const char * dir, const 
             (*prs)->pid = pid;
             (*prs)->tty = -1;
             (*prs)->bcg = c->bcg;
+            broadcast_group_lock(c->bcg);
             strlcpy((*prs)->service, params->service, sizeof((*prs)->service));
             (*prs)->inp_struct = write_process_input(*prs, pipes[0][0]);
             (*prs)->out_struct = read_process_output(*prs, pipes[0][0]);
@@ -1384,6 +1391,13 @@ static int start_process_imp(Channel * c, char ** envp, const char * dir, const 
                 while (!err && fd > 3 && fd - 1 != p_log[1]) close(--fd);
                 if (!err && params->attach && context_attach_self() < 0) err = errno;
                 if (!err && params->dir != NULL && chdir(params->dir) < 0) err = errno;
+#if defined(_POSIX_C_SOURCE)
+                if (!err) {
+                    sigset_t set;
+                    sigemptyset(&set);
+                    if (sigprocmask(SIG_SETMASK, &set, NULL) < 0) err = errno;
+                }
+#endif
                 if (!err) {
                     if (envp != NULL) environ = envp;
                     execvp(exe, args);
@@ -1398,6 +1412,7 @@ static int start_process_imp(Channel * c, char ** envp, const char * dir, const 
             (*prs)->pid = pid;
             (*prs)->tty = -1;
             (*prs)->bcg = c->bcg;
+            broadcast_group_lock(c->bcg);
             strlcpy((*prs)->service, params->service, sizeof((*prs)->service));
             (*prs)->inp_struct = write_process_input(*prs, p_inp[1]);
             (*prs)->out_struct = read_process_output(*prs, p_out[0]);
@@ -1422,7 +1437,7 @@ static int start_process_imp(Channel * c, char ** envp, const char * dir, const 
         /* http://docs.oracle.com/cd/E18752_01/html/816-4855/termsub15-44781.html */
         fd_tty_master = open("/dev/ptmx", O_RDWR);
 #else
-        fd_tty_master = posix_openpt(O_RDWR|O_NOCTTY);
+        fd_tty_master = posix_openpt(O_RDWR | O_NOCTTY);
 #endif
         if (fd_tty_master < 0 || grantpt(fd_tty_master) < 0 || unlockpt(fd_tty_master) < 0) err = errno;
         if (!err && (tty_slave_name = ptsname(fd_tty_master)) == NULL) err = EINVAL;
@@ -1462,6 +1477,13 @@ static int start_process_imp(Channel * c, char ** envp, const char * dir, const 
                 while (!err && fd > 3 && fd - 1 != p_log[1]) close(--fd);
                 if (!err && params->attach && context_attach_self() < 0) err = errno;
                 if (!err && params->dir != NULL && chdir(params->dir) < 0) err = errno;
+#if defined(_POSIX_C_SOURCE)
+                if (!err) {
+                    sigset_t set;
+                    sigemptyset(&set);
+                    if (sigprocmask(SIG_SETMASK, &set, NULL) < 0) err = errno;
+                }
+#endif
                 if (!err) {
                     if (envp != NULL) environ = envp;
                     execvp(exe, args);
@@ -1476,6 +1498,7 @@ static int start_process_imp(Channel * c, char ** envp, const char * dir, const 
             (*prs)->pid = pid;
             (*prs)->tty = fd_tty_master;
             (*prs)->bcg = c->bcg;
+            broadcast_group_lock(c->bcg);
             strlcpy((*prs)->service, params->service, sizeof((*prs)->service));
             (*prs)->inp_struct = write_process_input(*prs, fd_tty_master);
             (*prs)->out_struct = read_process_output(*prs, fd_tty_out);
@@ -1751,6 +1774,51 @@ static void command_set_win_size(char * token, Channel * c) {
 
 }
 
+static void command_get_capabilities(char * token, Channel * c) {
+    char id[256];
+    pid_t pid = 0, parent = 0;
+    OutputStream * out = &c->out;
+    int err = 0;
+
+    json_read_string(&c->inp, id, sizeof(id));
+    json_test_char(&c->inp, MARKER_EOA);
+    json_test_char(&c->inp, MARKER_EOM);
+
+    if (strlen(id) > 0) {
+        pid = id2pid(id, &parent);
+        if (find_process(pid) == NULL) {
+            err = ERR_INV_CONTEXT;
+        }
+    }
+
+    write_stringz(out, "R");
+    write_stringz(out, token);
+    write_errno(out, err);
+    if (err) {
+        write_stringz(&c->out, "null");
+    }
+    else {
+        write_stream(out, '{');
+        json_write_string(out, "ID");
+        write_stream(out, ':');
+        json_write_string(out, id);
+        write_stream(out, ',');
+        json_write_string(out, "CanTerminate");
+        write_stream(out, ':');
+        json_write_boolean(out, 1);
+#if ENABLE_DebugContext
+        write_stream(out, ',');
+        json_write_string(out, "CanTerminateAttached");
+        write_stream(out, ':');
+        json_write_boolean(out, 1);
+#endif
+        write_stream(out, '}');
+        write_stream(out, 0);
+    }
+
+    write_stream(out, MARKER_EOM);
+}
+
 void ini_processes_service(Protocol * proto) {
     int v;
     static int vs[] = { 0, 1 };
@@ -1771,6 +1839,7 @@ void ini_processes_service(Protocol * proto) {
 #endif /* ENABLE_DebugContext */
     }
     add_command_handler(proto, PROCESSES[1], "setWinSize", command_set_win_size);
+    add_command_handler(proto, PROCESSES[1], "getCapabilities", command_get_capabilities);
 }
 #endif /* SERVICE_Processes */
 

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2016 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2018 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -226,14 +226,14 @@ static void unit_line_to_address(Context * ctx, MemoryRegion * mem, CompUnit * u
             if (state->mFile < file) {
                 l = k + 1;
             }
-            else if (state->mFile > file || state->mLine > line || (state->mLine == line && state->mColumn > column)) {
+            else if (state->mFile > file || state->mLine > line || (column && state->mLine == line && state->mColumn > column)) {
                 h = k;
             }
             else {
                 LineNumbersState * next = get_next_in_text(unit, state);
                 U4_T next_line = next ? next->mLine : state->mLine + 1;
                 U4_T next_column = next ? next->mColumn : 0;
-                if (next_line < line || (next_line == line && next_column <= column)) {
+                if (next_line < line || (column && next_line == line && next_column <= column)) {
                     l = k + 1;
                 }
                 else {
@@ -242,7 +242,7 @@ static void unit_line_to_address(Context * ctx, MemoryRegion * mem, CompUnit * u
                         LineNumbersState * prev = unit->mStatesIndex[k - 1];
                         if (prev->mFile != state->mFile) break;
                         if (prev->mLine != state->mLine) break;
-                        if (prev->mColumn != state->mColumn) break;
+                        if (column && prev->mColumn != state->mColumn) break;
                         state = prev;
                         k--;
                     }
@@ -251,14 +251,14 @@ static void unit_line_to_address(Context * ctx, MemoryRegion * mem, CompUnit * u
                         ContextAddress addr = elf_run_time_address_in_region(ctx, mem, unit->mFile, sec, state->mAddress);
                         if (errno == 0) {
                             LineNumbersState * code_next = get_next_in_code(unit, state);
-                            if (code_next != NULL) {
+                            /* Note: area code size 0 is OK as long as it has valid next statement address */
+                            if (code_next != NULL && state->mAddress <= code_next->mAddress) {
                                 LineNumbersState * text_next = get_next_in_text(unit, state);
                                 U4_T next_line = text_next ? text_next->mLine : state->mLine + 1;
                                 U4_T next_column = text_next ? text_next->mColumn : 0;
                                 if (next_line > line || (next_line == line && next_column > column)) {
                                     UNIT_TO_LINE_ADDR_LOCALS_HOOK
                                     assert(state->mLine <= line);
-                                    assert(state->mLine < line || state->mColumn <= column);
                                     UNIT_TO_LINE_ADDR_HOOK
                                     {
                                     call_client(ctx, unit, state, code_next, text_next, addr, client, args);
@@ -270,7 +270,7 @@ static void unit_line_to_address(Context * ctx, MemoryRegion * mem, CompUnit * u
                         state = unit->mStatesIndex[k];
                         if (state->mFile > file) break;
                         if (state->mLine > line) break;
-                        if (state->mColumn > column) break;
+                        if (column && state->mColumn > column) break;
                     }
                     break;
                 }

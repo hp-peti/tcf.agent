@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2016 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2017 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -27,9 +27,7 @@
 #include <string.h>
 #include <assert.h>
 #include <tcf/framework/myalloc.h>
-#include <tcf/framework/protocol.h>
 #include <tcf/framework/trace.h>
-#include <tcf/framework/context.h>
 #include <tcf/framework/json.h>
 #include <tcf/framework/cache.h>
 #include <tcf/framework/exceptions.h>
@@ -89,10 +87,32 @@ static int get_frame_debug_info(StackFrame * frame, StackTracingInfo ** info) {
     }
     if (ip > 0 && !frame->is_top_frame) {
         StackTrace * stk = EXT(ctx);
-        StackFrame * up = stk->frames + (frame->frame - 1);
-        if (up->is_walked) {
-            /* Workaround for missing frame info for return address of a function that never returns */
+        if (frame->frame > stk->frame_cnt) {
             ip--;
+        }
+        else {
+            StackFrame * up = stk->frames + (frame->frame - 1);
+            /* Walked reg values are saved before call, use (return address) - 1 to search next frame info.
+             * Stack crawl regs are computed after return, use return address */
+            if (up->is_walked) {
+                ip--;
+            }
+#if ENABLE_Symbols
+            else {
+                /* Workaround for missing frame info for return address of a function that never returns */
+                Symbol * sym = NULL;
+                int sym_class = SYM_CLASS_UNKNOWN;
+                ContextAddress sym_addr = 0;
+                ContextAddress sym_size = 0;
+                if (find_symbol_by_addr(ctx, STACK_NO_FRAME, (ContextAddress)(ip - 1), &sym) == 0 &&
+                        get_symbol_class(sym, &sym_class) == 0 && sym_class == SYM_CLASS_FUNCTION &&
+                        get_symbol_size(sym, &sym_size) == 0 && sym_size != 0 &&
+                        get_symbol_address(sym, &sym_addr) == 0 && sym_addr != 0 &&
+                        sym_addr + sym_size > sym_addr && sym_addr + sym_size <= ip) {
+                    ip--;
+                }
+            }
+#endif
         }
     }
     return get_stack_tracing_info(ctx, (ContextAddress)ip, info);
@@ -244,7 +264,7 @@ static void trace_stack(Context * ctx, StackTrace * stack, int max_frames) {
         add_frame(stack, &down);
     }
 
-    trace(LOG_STACK, "Stack trace, ctx %s", ctx->id);
+    trace(LOG_STACK, "Stack trace, ctx %s, max_frames %d", ctx->id, max_frames);
     while (stack->frame_cnt < max_frames) {
         int frame_idx = stack->frame_cnt - 1;
         StackFrame * frame = stack->frames + frame_idx;
@@ -254,9 +274,9 @@ static void trace_stack(Context * ctx, StackTrace * stack, int max_frames) {
             RegisterDefinition * def;
             trace(LOG_STACK, "Frame %d", stack->frame_cnt - 1);
             for (def = get_reg_definitions(ctx); def->name != NULL; def++) {
-                if (def->no_read || def->read_once) continue;
+                if (def->no_read || def->read_once || def->bits || !def->size) continue;
                 if (read_reg_value(frame, def, &v) != 0) continue;
-                trace(LOG_STACK, "  %-8s %16" PRIX64, def->name, v);
+                trace(LOG_STACK, "  %-8s %16" PRIx64, def->name, v);
             }
         }
 #endif
@@ -279,7 +299,7 @@ static void trace_stack(Context * ctx, StackTrace * stack, int max_frames) {
             }
         }
         assert(down.area == NULL);
-        trace(LOG_STACK, "  cfa      %16" PRIX64, (uint64_t)frame->fp);
+        trace(LOG_STACK, "  cfa      %16" PRIx64, (uint64_t)frame->fp);
         if (!down.has_reg_data) {
             stack->complete = 1;
             free_frame(&down);

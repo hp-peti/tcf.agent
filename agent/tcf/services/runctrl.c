@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2017 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2018 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -26,13 +26,10 @@
 #include <signal.h>
 #include <errno.h>
 #include <assert.h>
-#include <tcf/framework/protocol.h>
 #include <tcf/framework/channel.h>
 #include <tcf/framework/json.h>
-#include <tcf/framework/context.h>
 #include <tcf/framework/myalloc.h>
 #include <tcf/framework/trace.h>
-#include <tcf/framework/events.h>
 #include <tcf/framework/exceptions.h>
 #include <tcf/framework/signames.h>
 #include <tcf/framework/cache.h>
@@ -85,6 +82,7 @@ typedef struct ContextExtensionRC {
     int step_repeat_cnt;
     int step_into_hidden;
     int stop_group_mark;
+    Context * stop_group_ctx;
     int run_ctrl_ctx_lock_cnt;
     ContextAddress step_range_start;
     ContextAddress step_range_end;
@@ -639,7 +637,7 @@ static void command_get_state_cache_client(void * x) {
     if (ctx == NULL || !context_has_state(ctx)) err = ERR_INV_CONTEXT;
     else if (ctx->exited) err = ERR_ALREADY_EXITED;
 
-    if (ext != NULL) get_current_pc(ctx);
+    if (!err && ext != NULL && ext->intercepted) get_current_pc(ctx);
 
     cache_exit();
 
@@ -885,23 +883,6 @@ int continue_debug_context(Context * ctx, Channel * c,
     Context * grp = context_get_group(ctx, CONTEXT_GROUP_INTERCEPT);
     int err = 0;
 
-    EXT(grp)->reverse_run = 0;
-    switch (mode) {
-    case RM_REVERSE_RESUME:
-    case RM_REVERSE_STEP_OVER:
-    case RM_REVERSE_STEP_INTO:
-    case RM_REVERSE_STEP_OVER_LINE:
-    case RM_REVERSE_STEP_INTO_LINE:
-    case RM_REVERSE_STEP_OUT:
-    case RM_REVERSE_STEP_OVER_RANGE:
-    case RM_REVERSE_STEP_INTO_RANGE:
-    case RM_REVERSE_UNTIL_ACTIVE:
-        EXT(grp)->reverse_run = 1;
-        break;
-    }
-
-    if (context_has_state(ctx)) start_step_mode(ctx, c, mode, count, range_start, range_end);
-
     if (ctx->exited) {
         err = ERR_ALREADY_EXITED;
     }
@@ -911,13 +892,33 @@ int continue_debug_context(Context * ctx, Channel * c,
     else if (count < 1) {
         err = EINVAL;
     }
-    else if (resume_context_tree(ctx) < 0) {
-        err = errno;
+
+    if (!err) {
+        EXT(grp)->reverse_run = 0;
+        switch (mode) {
+        case RM_REVERSE_RESUME:
+        case RM_REVERSE_STEP_OVER:
+        case RM_REVERSE_STEP_INTO:
+        case RM_REVERSE_STEP_OVER_LINE:
+        case RM_REVERSE_STEP_INTO_LINE:
+        case RM_REVERSE_STEP_OUT:
+        case RM_REVERSE_STEP_OVER_RANGE:
+        case RM_REVERSE_STEP_INTO_RANGE:
+        case RM_REVERSE_UNTIL_ACTIVE:
+            EXT(grp)->reverse_run = 1;
+            break;
+        }
+
+        if (context_has_state(ctx)) start_step_mode(ctx, c, mode, count, range_start, range_end);
+
+        if (resume_context_tree(ctx) < 0) {
+            err = errno;
+            cancel_step_mode(ctx);
+        }
     }
 
     assert(err || !ext->intercepted);
     if (err) {
-        cancel_step_mode(ctx);
         errno = err;
         return -1;
     }
@@ -1400,6 +1401,7 @@ static void send_event_context_resumed(Context * grp) {
 
 static void send_event_context_exception(Context * ctx) {
     OutputStream * out = &broadcast_group->out;
+    const char * msg = NULL;
 
     write_stringz(out, "E");
     write_stringz(out, RUN_CONTROL);
@@ -1409,20 +1411,20 @@ static void send_event_context_exception(Context * ctx) {
     json_write_string(out, ctx->id);
     write_stream(out, 0);
 
-    /* String: Human readable description of the exception */
+    /* String: Human-readable description of the exception */
     if (ctx->exception_description) {
-        json_write_string(out, ctx->exception_description);
+        msg = ctx->exception_description;
     }
     else if (ctx->signal > 0) {
-        char buf[128];
         const char * desc = signal_description(ctx->signal);
         if (desc == NULL) desc = signal_name(ctx->signal);
-        snprintf(buf, sizeof(buf), desc == NULL ? "Signal %d" : "Signal %d: %s", ctx->signal, desc);
-        json_write_string(out, buf);
+        if (desc == NULL) msg = tmp_printf("Signal %d", ctx->signal);
+        else msg = tmp_printf("Signal %d: %s", ctx->signal, desc);
     }
     else {
-        json_write_string(out, context_suspend_reason(ctx));
+        msg = context_suspend_reason(ctx);
     }
+    json_write_string(out, msg);
     write_stream(out, 0);
 
     write_stream(out, MARKER_EOM);
@@ -1473,6 +1475,7 @@ static int is_function_prologue(Context * ctx, ContextAddress ip, CodeArea * are
     ContextAddress sym_addr = 0;
     ContextAddress sym_size = 0;
     assert(ip >= area->start_address && ip < area->end_address);
+    if (area->prologue_end) return 0;
     if (find_symbol_by_addr(ctx, STACK_NO_FRAME, ip, &sym) < 0) return 0;
     if (get_symbol_class(sym, &sym_class) < 0) return 0;
     if (sym_class != SYM_CLASS_FUNCTION) return 0;
@@ -1565,7 +1568,7 @@ static BreakpointInfo * create_step_machine_breakpoint(ContextAddress addr, Cont
             json_write_boolean(out, 1);
             break;
         case 1:
-            snprintf(str, sizeof(str), "0x%" PRIX64, (uint64_t)addr);
+            snprintf(str, sizeof(str), "%#" PRIx64, (uint64_t)addr);
             json_write_string(out, str);
             break;
         case 2:
@@ -2398,21 +2401,6 @@ static void sync_run_state_event(void * args) {
     cache_enter(sync_run_state_cache_client, NULL, NULL, 0);
 }
 
-static void mark_stop_groups(void) {
-    LINK * l = context_root.next;
-    SafeEvent * e = safe_event_list;
-    while (l != &context_root) {
-        Context * grp = context_get_group(ctxl2ctxp(l), CONTEXT_GROUP_STOP);
-        EXT(grp)->stop_group_mark = 0;
-        l = l->next;
-    }
-    while (e != NULL) {
-        Context * grp = context_get_group(e->ctx, CONTEXT_GROUP_STOP);
-        EXT(grp)->stop_group_mark = 1;
-        e = e->next;
-    }
-}
-
 static void mark_cannot_stop(Context * ctx, const char * err_msg) {
     ContextExtensionRC * ext = EXT(ctx);
     const char * name = ctx->name;
@@ -2425,6 +2413,7 @@ static void mark_cannot_stop(Context * ctx, const char * err_msg) {
 
 static void run_safe_events(void * arg) {
     LINK * l;
+    SafeEvent * i;
 
     run_safe_events_posted--;
     if (run_safe_events_posted > 0) return;
@@ -2437,18 +2426,31 @@ static void run_safe_events(void * arg) {
 
     if (safe_event_list == NULL) return;
 
-    mark_stop_groups();
     safe_event_pid_count = 0;
-
+    l = context_root.next;
+    while (l != &context_root) {
+        Context * ctx = ctxl2ctxp(l);
+        ContextExtensionRC * ext = EXT(ctx);
+        ext->stop_group_ctx = context_get_group(ctx, CONTEXT_GROUP_STOP);
+        ext->stop_group_mark = 0;
+        l = l->next;
+    }
+    i = safe_event_list;
+    while (i != NULL) {
+        Context * grp = EXT(i->ctx)->stop_group_ctx;
+        EXT(grp)->stop_group_mark = 1;
+        i = i->next;
+    }
     l = context_root.next;
     while (l != &context_root) {
         Context * ctx = ctxl2ctxp(l);
         ContextExtensionRC * ext = EXT(ctx);
         l = l->next;
         ext->pending_safe_event = 0;
+        ext->stop_group_mark = EXT(ext->stop_group_ctx)->stop_group_mark;
         if (ctx->exited || ctx->exiting || ext->cannot_stop) continue;
+        if (!ext->safe_single_step && !ext->stop_group_mark) continue;
         if (ctx->stopped || !context_has_state(ctx)) continue;
-        if (!ext->safe_single_step && !EXT(context_get_group(ctx, CONTEXT_GROUP_STOP))->stop_group_mark) continue;
         if (stop_all_timer_cnt >= STOP_ALL_MAX_CNT) {
             mark_cannot_stop(ctx, "timeout");
             continue;
@@ -2484,8 +2486,8 @@ static void run_safe_events(void * arg) {
 
     while (safe_event_list) {
         Trap trap;
-        SafeEvent * i = safe_event_list;
-        if (!EXT(context_get_group(i->ctx, CONTEXT_GROUP_STOP))->stop_group_mark) {
+        i = safe_event_list;
+        if (!EXT(i->ctx)->stop_group_mark) {
             assert(run_ctrl_lock_cnt > 0);
             if (run_safe_events_posted == 0) {
                 run_safe_events_posted++;
@@ -2698,8 +2700,9 @@ void rem_run_control_event_listener(RunControlEventListener * listener) {
 
 static void stop_if_safe_events(Context * ctx) {
     ContextExtensionRC * ext = EXT(ctx);
-    assert(run_ctrl_lock_cnt == 0 || !ext->safe_single_step || safe_event_list != NULL);
-    if (run_ctrl_lock_cnt && !ctx->exiting && !ctx->stopped && context_has_state(ctx)) {
+    if (safe_event_active && EXT(ctx)->stop_group_mark &&
+            !ctx->exiting && !ctx->stopped && context_has_state(ctx)) {
+        assert(run_ctrl_lock_cnt > 0);
         if (!ext->safe_single_step) {
             context_stop(ctx);
         }

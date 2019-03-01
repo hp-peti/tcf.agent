@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2016 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2018 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -257,8 +257,9 @@ int wsa_closesocket(int socket) {
     return 0;
 }
 
-#if defined(_WIN32_WINNT) && _WIN32_WINNT < 0x0600
-/* inet_ntop()/inet_pton() are not available before Windows Vista */
+/* inet_ntop()/inet_pton() are not available in MinGW */
+/* inet_ntop()/inet_pton() are not available in Windows before Windows Vista */
+#if defined(__MINGW32__) || (defined(_WIN32_WINNT) && _WIN32_WINNT < 0x0600)
 const char * inet_ntop(int af, const void * src, char * dst, socklen_t size) {
     char * str = NULL;
     if (af != AF_INET) {
@@ -335,7 +336,7 @@ int clock_gettime(clockid_t clock_id, struct timespec * tp) {
     return -1;
 }
 
-void usleep(useconds_t useconds) {
+void usleep(unsigned useconds) {
     Sleep(useconds / 1000);
 }
 
@@ -813,7 +814,9 @@ const char * get_user_name(void) {
 
 void ini_mdep(void) {
     pthread_attr_init(&pthread_create_attr);
+#ifndef USE_DEFAULT_THREAD_STACK_SIZE
     pthread_attr_setstacksize(&pthread_create_attr, 0x8000);
+#endif
     pthread_attr_setname(&pthread_create_attr, "tTcf");
     pthread_attr_setopt (&pthread_create_attr, VX_FP_TASK|VX_UNBREAKABLE);
 }
@@ -889,14 +892,20 @@ ip_ifc_info* get_ip_ifc(void) {
 #if USE_locale
 #include <locale.h>
 #endif
-#include <langinfo.h>
+#if !defined(ANDROID)
+#  include <langinfo.h>
+#endif
 #include <sys/utsname.h>
 #if defined(__linux__)
 #  include <asm/unistd.h>
 #endif
 
 #if !defined(USE_clock_gettime)
-#  define USE_clock_gettime (!defined(__FreeBSD__) && !defined(__NetBSD__) && !defined(__APPLE__))
+#  if (!defined(__FreeBSD__) && !defined(__NetBSD__) && !defined(__APPLE__))
+#    define USE_clock_gettime 1
+#  else
+#    define USE_clock_gettime 0
+#  endif
 #endif
 
 #if !USE_clock_gettime
@@ -917,11 +926,9 @@ int clock_gettime(clockid_t clock_id, struct timespec * tp) {
 }
 #endif
 
-#if defined(__UCLIBC__)
-#include <fcntl.h>
-
+#if defined(__UCLIBC__) || defined(ANDROID)
 int posix_openpt(int flags) {
-    return (open("/dev/ptmx", flags));
+    return open("/dev/ptmx", flags);
 }
 #endif
 
@@ -962,7 +969,7 @@ const char * get_user_name(void) {
 }
 
 int tkill(pid_t pid, int signal) {
-#if defined(__linux__)
+#if defined(__linux__) && !defined(ANDROID)
     return syscall(__NR_tkill, pid, signal);
 #else
     return kill(pid, signal);
@@ -978,7 +985,9 @@ void ini_mdep(void) {
 #endif
     signal(SIGPIPE, SIG_IGN);
     pthread_attr_init(&pthread_create_attr);
+#ifndef USE_DEFAULT_THREAD_STACK_SIZE
     pthread_attr_setstacksize(&pthread_create_attr, 0x8000);
+#endif
 }
 
 #endif
@@ -1081,7 +1090,7 @@ char * canonicalize_file_name(const char * path) {
     return strdup(buf);
 }
 
-#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__APPLE__) || defined(__sun__)
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__APPLE__) || defined(__sun__) || defined(ANDROID)
 
 char * canonicalize_file_name(const char * path) {
     char buf[PATH_MAX];
@@ -1090,7 +1099,7 @@ char * canonicalize_file_name(const char * path) {
     return strdup(res);
 }
 
-#elif defined(__UCLIBC__)
+#elif !USE_canonicalize_file_name
 
 char * canonicalize_file_name(const char * path) {
     return realpath(path, NULL);
@@ -1204,7 +1213,7 @@ int loc_getaddrinfo(const char * nodename, const char * servname,
     }
     if (servname != NULL && servname[0] != 0) {
         char * p = NULL;
-        port = (unsigned int) strtoul(servname, &p, 10);
+        port = (unsigned)strtoul(servname, &p, 10);
         if (port < 0 || port > 0xffff || *p != '\0' || p == servname) {
             return 1;
         }
@@ -1500,7 +1509,7 @@ void close_out_and_err(void) {
         close(fd);
 }
 
-#elif defined(_WRS_KERNEL) || defined (__SYMBIAN32__)
+#elif defined(_WRS_KERNEL) || defined (__SYMBIAN32__) || defined(ANDROID)
 
 int is_daemon(void) {
     return 0;
@@ -1810,7 +1819,7 @@ const char * double_to_str(double n) {
     return tmp_strdup(buf + i);
 }
 
-#if !defined(__FreeBSD__) && !defined(__NetBSD__) && !defined(__APPLE__) && !defined(__VXWORKS__)
+#if !USE_strlcpy_strlcat
 
 size_t strlcpy(char * dst, const char * src, size_t size) {
     char ch;
@@ -1844,7 +1853,11 @@ size_t strlcat(char * dst, const char * src, size_t size) {
 #endif
 
 #if !defined(USE_uuid_generate)
-#  define USE_uuid_generate (defined(__linux__) && !defined(__UCLIBC__) && !defined(ANDROID))
+#  if (defined(__linux__) && !defined(__UCLIBC__) && !defined(ANDROID))
+#    define USE_uuid_generate 1
+#  else
+#    define USE_uuid_generate 0
+#  endif
 #endif
 
 #if USE_uuid_generate
@@ -1866,7 +1879,7 @@ const char * create_uuid(void) {
     struct timespec time_now;
     memset(&time_now, 0, sizeof(time_now));
     if (clock_gettime(CLOCK_REALTIME, &time_now)) check_error(errno);
-    if (buf[0] == 0) srand((unsigned int)time_now.tv_sec ^ (unsigned int)time_now.tv_nsec);
+    if (buf[0] == 0) srand((unsigned)time_now.tv_sec ^ (unsigned)time_now.tv_nsec);
     snprintf(buf, sizeof(buf), "%08x-%04x-4%03x-8%03x-%04x%04x%04x",
         (int)time_now.tv_sec & 0xffffffff, (int)(time_now.tv_nsec >> 13) & 0xffff,
         rand() & 0xfff, rand() & 0xfff, rand() & 0xffff, rand() & 0xffff, rand() & 0xffff);

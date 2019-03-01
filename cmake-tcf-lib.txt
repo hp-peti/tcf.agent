@@ -1,13 +1,31 @@
 # -*- cmake -*-
 
-if (WIN32)
-if(NOT TCF_OPSYS)
-  set(TCF_OPSYS "Windows")
+set(default_opsys ${CMAKE_SYSTEM_NAME})
+if(default_opsys MATCHES "Linux|Android")
+  set(default_opsys GNU/Linux)
 endif()
-if(NOT TCF_MACHINE)
-  set(TCF_MACHINE "x86_64")
+
+set(default_machine ${CMAKE_SYSTEM_PROCESSOR})
+if(default_machine MATCHES "^(amd64|AMD64)$")
+  set(default_machine x86_64)
+elseif(default_machine MATCHES "^(armv6l|armv7l|armv7-a)$")
+  set(default_machine arm)
+elseif(default_machine STREQUAL "ppc64")
+  set(default_machine powerpc)
+elseif(default_machine STREQUAL "aarch64")
+  set(default_machine a64)
 endif()
-endif (WIN32)
+
+set(TCF_MACHINE ${default_machine} CACHE STRING "TCF machine")
+set(TCF_OPSYS ${default_opsys} CACHE STRING "TCF operating system")
+
+if (NOT TCF_DIR)
+   set(TCF_DIR ${CMAKE_CURRENT_LIST_DIR})
+endif()
+
+if (NOT TCF_LIB_NAME)
+   set(TCF_LIB_NAME tcf)
+endif()
 
 set(TCF_BASE_DIR ${TCF_DIR}/agent)
 
@@ -20,7 +38,8 @@ file(GLOB TCF_SRCS_REL RELATIVE ${TCF_BASE_DIR}
 	${TCF_BASE_DIR}/machine/${TCF_MACHINE}/tcf/*.c
 	${TCF_BASE_DIR}/tcf/framework/*.c
 	${TCF_BASE_DIR}/tcf/services/*.c
-	${TCF_BASE_DIR}/tcf/main/*.c)
+	${TCF_BASE_DIR}/tcf/main/*.c
+	${TCF_BASE_DIR}/tcf/http/*.c)
 
 # remove non-library files
 file(GLOB TCF_MAIN_REL RELATIVE ${TCF_BASE_DIR}
@@ -30,12 +49,13 @@ list(REMOVE_ITEM TCF_SRCS_REL ${TCF_MAIN_REL})
 if(DEFINED TCF_EXTRA_DIR)
   foreach(extraDir ${TCF_EXTRA_DIR})
     # get extra all source files
-    file(GLOB TCF_EXTRA_SRCS_REL RELATIVE ${extraDir}
+    file(GLOB_RECURSE TCF_EXTRA_SRCS_REL RELATIVE ${extraDir}
       ${extraDir}/system/${TCF_OPSYS}/tcf/*.c
       ${extraDir}/machine/${TCF_MACHINE}/tcf/*.c
       ${extraDir}/tcf/framework/*.c
       ${extraDir}/tcf/services/*.c
-      ${extraDir}/tcf/main/*.c)
+      ${extraDir}/tcf/main/*.c
+      ${extraDir}/tcf/http/*.c)
 
     # Override regular files with extra files
     list (LENGTH TCF_EXTRA_SRCS_REL LEN_TCF_EXTRA_SRCS_REL)
@@ -62,12 +82,26 @@ endif()
 
 include_directories(${TCF_BASE_DIR} ${TCF_BASE_DIR}/system/${TCF_OPSYS} ${TCF_BASE_DIR}/machine/${TCF_MACHINE})
 
-set_source_files_properties(${TCF_SRCS} PROPERTIES
-  COMPILE_FLAGS "${MULTI_THREADED_COMPILE_FLAGS}")
 add_library(${TCF_LIB_NAME} ${TCF_LIB_TYPE} ${TCF_SRCS})
-target_link_libraries(${TCF_LIB_NAME}
-  ${UUID_LIB_NAME} ${MULTI_THREADED_LINK_LIBS} ${SOCKET_LINK_LIBS})
-
+find_package(Threads)
+target_link_libraries(${TCF_LIB_NAME} Threads::Threads)
+find_library(LIBRT rt)
+if(LIBRT)
+  target_link_libraries(${TCF_LIB_NAME} ${LIBRT})
+endif()
+find_library(LIBUUID uuid)
+if(LIBUUID)
+  target_link_libraries(${TCF_LIB_NAME} ${LIBUUID})
+else()
+  target_compile_definitions(${TCF_LIB_NAME} PUBLIC USE_uuid_generate=0)
+endif()
+if(WIN32)
+  target_link_libraries(${TCF_LIB_NAME} version.lib psapi.lib ws2_32 iphlpapi)
+endif()
+if(ANDROID)
+  find_library(LIBLOG log)
+  target_link_libraries(${TCF_LIB_NAME} ${LIBLOG})
+endif()
 if(SSL_LIB_NAME)
   target_link_libraries(${TCF_LIB_NAME} ${SSL_LIB_NAME})
 else()

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2017 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2018 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -50,7 +50,7 @@
 #  pragma warning(disable:4996) /* 'strcpy': This function or variable may be unsafe */
 #  if _MSC_VER <= 1500
 #    pragma warning(disable:4702) /* unreachable code */
-#  elif _MSC_VER >= 1900 /* MSVC 2015*/
+#  elif _MSC_VER >= 1900 /* MSVC 2015 */
 #    ifndef _CRT_NO_TIME_T
 #      define _TIMESPEC_DEFINED
 #    endif
@@ -83,23 +83,34 @@
 #include <io.h>
 
 #if defined(_MSC_VER)
-   typedef signed __int8 int8_t;
-   typedef unsigned __int8 uint8_t;
-   typedef signed __int16 int16_t;
-   typedef unsigned __int16 uint16_t;
-   typedef signed __int32 int32_t;
-   typedef unsigned __int32 uint32_t;
-   typedef signed __int64 int64_t;
-   typedef unsigned __int64 uint64_t;
-  #if defined(_WIN64)
-   typedef __int64 ssize_t;
-  #elif defined(_WIN32)
-   typedef long ssize_t;
-  #endif
-#  define PRIu64 "I64u"
-#  define PRId64 "I64d"
-#  define PRIX64 "I64X"
-#  define SCNx64 "I64x"
+#  if _MSC_VER >= 1800 /* MSVC 2013 */
+#    include <inttypes.h>
+#  else
+#    if  _MSC_VER >= 1600 /* MSVC 2010 */
+#      include <stdint.h>
+#    else
+       typedef signed __int8 int8_t;
+       typedef unsigned __int8 uint8_t;
+       typedef signed __int16 int16_t;
+       typedef unsigned __int16 uint16_t;
+       typedef signed __int32 int32_t;
+       typedef unsigned __int32 uint32_t;
+       typedef signed __int64 int64_t;
+       typedef unsigned __int64 uint64_t;
+#    endif
+#    define PRIx32 "I32x"
+#    define PRIu64 "I64u"
+#    define PRId64 "I64d"
+#    define PRIx64 "I64x"
+#    define PRIX64 "I64X"
+#    define SCNx64 "I64x"
+#    define PRIxPTR "Ix"
+#  endif
+#  if defined(_WIN64)
+     typedef __int64 ssize_t;
+#  elif defined(_WIN32)
+     typedef long ssize_t;
+#  endif
 #else
 #  include <inttypes.h>
 #endif
@@ -117,7 +128,7 @@ typedef int socklen_t;
 
 #include <errno.h>
 
-#if !defined(HAVE_STRUCT_TIMESPEC) && !defined(_TIMESPEC_DEFINED)
+#if !defined(HAVE_STRUCT_TIMESPEC) && !defined(_TIMESPEC_DEFINED) && !defined(__struct_timespec_defined)
 struct timespec {
     time_t  tv_sec;         /* seconds */
     long    tv_nsec;        /* nanoseconds */
@@ -133,7 +144,6 @@ struct timespec {
 #endif
 
 #if defined(__MINGW32__)
-typedef unsigned int useconds_t;
 #elif defined(_MSC_VER)
 #if defined(_M_IX86)
 #  define __i386__
@@ -147,14 +157,13 @@ typedef unsigned int useconds_t;
 #else
 typedef unsigned long pid_t;
 #endif
-typedef unsigned long useconds_t;
 #endif
 
 #define CLOCK_REALTIME  1
 #define CLOCK_MONOTONIC 2
 typedef int clockid_t;
 extern int clock_gettime(clockid_t clock_id, struct timespec * tp);
-extern void usleep(useconds_t useconds);
+extern void usleep(unsigned useconds);
 
 #define off_t __int64
 #define lseek _lseeki64
@@ -174,10 +183,6 @@ extern ssize_t pread(int fd, void * buf, size_t size, off_t offset);
 extern ssize_t pwrite(int fd, const void * buf, size_t size, off_t offset);
 
 #endif /* __CYGWIN__ */
-
-extern char * canonicalize_file_name(const char * path);
-
-#define O_LARGEFILE 0
 
 #elif defined(_WRS_KERNEL)
 /* VxWork kernel module */
@@ -201,7 +206,7 @@ extern char * canonicalize_file_name(const char * path);
 #define environ taskIdCurrent->ppEnviron
 
 #if _WRS_VXWORKS_MAJOR < 6 || _WRS_VXWORKS_MAJOR == 6 && _WRS_VXWORKS_MINOR < 9
-typedef unsigned int uintptr_t;
+typedef unsigned uintptr_t;
 #endif
 
 typedef unsigned long useconds_t;
@@ -213,11 +218,9 @@ typedef unsigned long useconds_t;
 #endif
 
 #define O_BINARY 0
-#define O_LARGEFILE 0
 #define lstat stat
 
 extern int truncate(char * path, int64_t size);
-extern char * canonicalize_file_name(const char * path);
 extern ssize_t pread(int fd, void * buf, size_t size, off_t offset);
 extern ssize_t pwrite(int fd, const void * buf, size_t size, off_t offset);
 
@@ -281,6 +284,9 @@ extern int loc_clock_gettime(int, struct timespec *);
 #include <sys/socket.h>
 #include <limits.h>
 #include <inttypes.h>
+#if defined(ANDROID)
+#include <android/log.h>
+#endif
 #if defined(__sun__)
 #include <string.h>
 #include <sys/stropts.h>
@@ -289,15 +295,20 @@ extern int loc_clock_gettime(int, struct timespec *);
 #define O_BINARY 0
 
 #if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__APPLE__) || defined(__sun__)
-#  define O_LARGEFILE 0
 extern char ** environ;
-extern char * canonicalize_file_name(const char * path);
-#endif /* BSD */
+#endif
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(CLOCK_REALTIME)
 #  define CLOCK_REALTIME 1
   typedef int clockid_t;
   extern int clock_gettime(clockid_t clock_id, struct timespec * tp);
+#endif
+
+#if defined(ANDROID)
+/* Android does not have SUN_LEN */
+#ifndef SUN_LEN
+#define SUN_LEN(ptr) ((size_t) (((struct sockaddr_un *) 0)->sun_path) + strlen((ptr)->sun_path))
+#endif
 #endif
 
 extern int tkill(pid_t pid, int signal);
@@ -306,8 +317,17 @@ extern int tkill(pid_t pid, int signal);
 
 #endif
 
+#ifndef PRIx32
+#  define PRIx32 "lx"
+#endif
+#ifndef PRIu64
+#  define PRIu64 "llu"
+#endif
 #ifndef PRId64
 #  define PRId64 "lld"
+#endif
+#ifndef PRIx64
+#  define PRIx64 "llx"
 #endif
 #ifndef PRIX64
 #  define PRIX64 "llX"
@@ -315,9 +335,16 @@ extern int tkill(pid_t pid, int signal);
 #ifndef SCNx64
 #  define SCNx64 "llx"
 #endif
+#ifndef PRIxPTR
+#  define PRIxPTR "x"
+#endif
 
 #ifndef MEM_USAGE_FACTOR
-#  define MEM_USAGE_FACTOR 32
+#  if defined(_WIN64) || (defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ > 4)
+#    define MEM_USAGE_FACTOR 128
+#  else
+#    define MEM_USAGE_FACTOR 32
+#  endif
 #endif
 
 /* Convert the initial portion of the string pointed to by buf
@@ -327,14 +354,34 @@ extern double str_to_double(const char * buf, char ** end);
 /* Convert double to string according to C/C++/JSON syntax */
 extern const char * double_to_str(double n);
 
-#if !defined(__FreeBSD__) && !defined(__NetBSD__) && !defined(__APPLE__) && !defined(__VXWORKS__)
-extern size_t strlcpy(char * dst, const char * src, size_t size);
-extern size_t strlcat(char * dst, const char * src, size_t size);
+#if defined(__UCLIBC__) || defined(ANDROID)
+extern int posix_openpt(int flags);
 #endif
 
-#if defined(__UCLIBC__)
+#ifndef USE_canonicalize_file_name
+#   if defined(_WIN32) || defined(__CYGWIN__) || \
+       defined(_WRS_KERNEL) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__APPLE__) || \
+       defined(__sun__) || defined(ANDROID) || defined(__UCLIBC__) || \
+       !defined(__GLIBC__) || (defined(__GLIBC__) && !defined(__USE_GNU))
+#    define USE_canonicalize_file_name 0
+#  else
+#    define USE_canonicalize_file_name 1
+#  endif
+#endif
+#if !USE_canonicalize_file_name
 extern char * canonicalize_file_name(const char * path);
-extern int posix_openpt(int flags);
+#endif
+
+#ifndef USE_strlcpy_strlcat
+#  if defined(_WIN32) || defined(__CYGWIN__) || defined(__sun__) || defined(__GLIBC__)
+#    define USE_strlcpy_strlcat 0
+#  else
+#    define USE_strlcpy_strlcat 1
+#  endif
+#endif
+#if !USE_strlcpy_strlcat
+extern size_t strlcpy(char * dst, const char * src, size_t size);
+extern size_t strlcat(char * dst, const char * src, size_t size);
 #endif
 
 #if defined(__i386__) || defined(__x86_64__)
@@ -349,6 +396,24 @@ extern int posix_openpt(int flags);
 #else
    extern int big_endian_host(void);
 #endif
+
+#ifndef ATTR_PRINTF
+#  if defined(__GNUC__) && __GNUC__ >= 3
+#    define ATTR_PRINTF(FORMAT, ARG) __attribute__((format(printf, (FORMAT), (ARG))))
+#  else
+#    define ATTR_PRINTF(FORMAT, ARG)
+#  endif
+#endif
+
+#ifndef ATTR_NORETURN
+#  if defined(__GNUC__) && __GNUC__ >= 3
+#    define ATTR_NORETURN __attribute__((noreturn))
+#  else
+#    define ATTR_NORETURN
+#  endif
+#endif
+
+#define member_to_type(ptr, type, member) (type *)((char *)(ptr) - offsetof(type, member))
 
 /* Swap bytes in a buffer - change value endianness */
 extern void swap_bytes(void * buf, size_t size);

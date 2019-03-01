@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2017 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2019 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -34,6 +34,7 @@
 #include <tcf/framework/channel_tcp.h>
 #include <tcf/framework/plugins.h>
 #include <tcf/services/discovery.h>
+#include <tcf/http/http.h>
 #include <tcf/main/test.h>
 #include <tcf/main/cmdline.h>
 #include <tcf/main/services.h>
@@ -144,7 +145,7 @@ static void signal_handler(int sig) {
     }
 }
 
-#if defined(_POSIX_C_SOURCE)
+#if defined(_POSIX_C_SOURCE) && !defined(__MINGW32__)
 static void * signal_handler_thread(void * arg) {
     int sig  = 0;
     sigset_t * set = (sigset_t *)arg;
@@ -184,7 +185,7 @@ static BOOL CtrlHandler(DWORD ctrl) {
 #endif
 
 static void ini_signal_handlers(void) {
-#if defined(_POSIX_C_SOURCE)
+#if defined(_POSIX_C_SOURCE) && !defined(__MINGW32__)
     pthread_t thread;
     static sigset_t set;
     sigemptyset(&set);
@@ -220,12 +221,15 @@ static const char * help_text[] = {
 #endif
     "  -s<url>          set agent listening port and protocol, default is " DEFAULT_SERVER_URL,
     "  -S               print server properties in Json format to stdout",
-#if ENABLE_DebugContext
+#if ENABLE_GdbRemoteSerialProtocol
     "  -g<port>         start GDB Remote Serial Protocol server at the specified TCP port",
 #endif
     "  -I<idle-seconds> exit if there are no connections for the specified time",
 #if ENABLE_Plugins
     "  -P<dir>          set agent plugins directory name",
+#endif
+#if ENABLE_HttpServer
+    "  -H<dir>          add HTML directory name",
 #endif
 #if ENABLE_SSL
     "  -c               generate SSL certificate and exit",
@@ -267,9 +271,11 @@ int main(int argc, char ** argv) {
 #endif
     int interactive = 0;
     int print_server_properties = 0;
-    const char * url = DEFAULT_SERVER_URL;
-    TCFBroadcastGroup * bcg;
-    Protocol * proto;
+    unsigned url_cnt = 0;
+    unsigned url_max = 0;
+    const char ** url_arr = NULL;
+    TCFBroadcastGroup * bcg = NULL;
+    Protocol * proto = NULL;
 
     PRE_INIT_HOOK;
     ini_framework();
@@ -346,9 +352,14 @@ int main(int argc, char ** argv) {
 #endif
             case 'L':
             case 's':
+#if ENABLE_GdbRemoteSerialProtocol
             case 'g':
+#endif
 #if ENABLE_Plugins
             case 'P':
+#endif
+#if ENABLE_HttpServer
+            case 'H':
 #endif
                 if (*s == '\0') {
                     if (++ind >= argc) {
@@ -374,7 +385,8 @@ int main(int argc, char ** argv) {
                     break;
 
                 case 's':
-                    url = s;
+                    if (url_cnt >= url_max) url_arr = (const char **)loc_realloc((void *)url_arr, sizeof(const char *) * (url_max += 16));
+                    url_arr[url_cnt++] = s;
                     break;
 
 #if ENABLE_GdbRemoteSerialProtocol
@@ -389,6 +401,21 @@ int main(int argc, char ** argv) {
 #if ENABLE_Plugins
                 case 'P':
                     plugins_path = s;
+                    break;
+#endif
+#if ENABLE_HttpServer
+                case 'H':
+                    {
+                        struct stat st;
+                        char * fnm = canonicalize_file_name(s);
+                        if (fnm == NULL || stat(fnm, &st) < 0) {
+                            fprintf(stderr, "%s: invalid option '-H %s': %s\n", progname, s, errno_to_str(errno));
+                            free(fnm);
+                            exit(1);
+                        }
+                        add_http_directory(fnm);
+                        free(fnm);
+                    }
                     break;
 #endif
                 }
@@ -437,11 +464,26 @@ int main(int argc, char ** argv) {
     }
 #endif
 
-    if (ini_server(url, proto, bcg) < 0) {
-        fprintf(stderr, "Cannot create listening port: %s\n", errno_to_str(errno));
-        exit(1);
+    {
+        unsigned i;
+
+        if (url_cnt == 0) {
+            if (url_cnt >= url_max) url_arr = (const char **)loc_realloc((void *)url_arr, sizeof(const char *) * (url_max += 16));
+            url_arr[url_cnt++] = DEFAULT_SERVER_URL;
+        }
+
+        for (i = 0; i < url_cnt; i++) {
+            if (ini_server(url_arr[i], proto, bcg) < 0) {
+                fprintf(stderr, "Cannot create listening port: %s\n", errno_to_str(errno));
+                exit(1);
+            }
+        }
+        loc_free(url_arr);
+        url_cnt = 0;
+        url_cnt = 0;
+
+        discovery_start();
     }
-    discovery_start();
 
     if (print_server_properties) {
         ChannelServer * s;

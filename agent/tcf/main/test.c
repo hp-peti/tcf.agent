@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2014 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2018 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -17,13 +17,13 @@
  * Agent self-testing service.
  */
 
-#if defined(__GNUC__) && !defined(_GNU_SOURCE)
-#  define _GNU_SOURCE
-#endif
-
 #include <tcf/config.h>
 
 #if ENABLE_RCBP_TEST
+
+#ifndef ENABLE_TestSymbols
+#  define ENABLE_TestSymbols (SERVICE_Expressions && !ENABLE_ELF)
+#endif
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -149,6 +149,7 @@ typedef int test_array[10001];
 extern int tcf_test_func_int(int x, int y);
 extern long tcf_test_func_long(long x, long y);
 extern double tcf_test_func_double(double x, double y);
+extern void tcf_test_func4(void);
 extern void tcf_test_func3(void);
 extern int tcf_test_func2(void);
 extern void tcf_test_func1(void);
@@ -157,6 +158,7 @@ extern void tcf_test_func0(enum test_enum);
 /* Main purpose of this declaration is to pull basic types info into DWARF */
 char tcf_test_char = 0;
 short tcf_test_short = 0;
+int tcf_test_int = 0;
 long tcf_test_long = 0;
 const char * tcf_test_str = "abc";
 
@@ -179,9 +181,13 @@ double tcf_test_func_double(double x, double y) {
     return x + y;
 }
 
+void tcf_test_func4(void) {
+}
+
 void tcf_test_func3(void) {
     tcf_test_char++;
     usleep(1000);
+    tcf_test_func4();
 }
 
 int tcf_test_func2(void) {
@@ -191,6 +197,9 @@ int tcf_test_func2(void) {
     int * func2_local4 = NULL;
     test_bitfields func2_local5 = { 0, 1, 2, 3, 4, 7, 9, 17, 1, 2, 3, 4, 7, 9, 17 };
     const char * func2_local_str = "bcd";
+
+func2_label:
+    if (tcf_test_int) goto func2_label;
 
     func2_local3.f_struct = &func2_local3;
     tcf_test_short++;
@@ -260,9 +269,10 @@ void test_proc(void) {
 }
 
 int find_test_symbol(Context * ctx, const char * name, void ** addr, int * sym_class) {
+#if ENABLE_TestSymbols
     /* This code allows to run TCF diagnostic tests when symbols info is not available */
+    *addr = NULL;
     if (is_test_process(ctx) && strncmp(name, "tcf_test_", 9) == 0) {
-        *addr = NULL;
         if (strcmp(name, "tcf_test_array") == 0) {
             *sym_class = SYM_CLASS_REFERENCE;
             *addr = &tcf_test_array;
@@ -277,9 +287,11 @@ int find_test_symbol(Context * ctx, const char * name, void ** addr, int * sym_c
             else if (strcmp(name, "tcf_test_func1") == 0) *addr = (void *)tcf_test_func1;
             else if (strcmp(name, "tcf_test_func2") == 0) *addr = (void *)tcf_test_func2;
             else if (strcmp(name, "tcf_test_func3") == 0) *addr = (void *)tcf_test_func3;
+            else if (strcmp(name, "tcf_test_func4") == 0) *addr = (void *)tcf_test_func4;
         }
         if (*addr != NULL) return 0;
     }
+#endif
     errno = ERR_SYM_NOT_FOUND;
     return -1;
 }
@@ -348,7 +360,7 @@ int run_test_process(ContextAttachCallBack * done, void * data) {
         int fd = sysconf(_SC_OPEN_MAX);
         while (fd > 3) close(--fd);
         if (context_attach_self() < 0) exit(1);
-#if defined(__linux__)
+#if defined(__linux__) && !ENABLE_TestSymbols
         {
             char buf[32];
             char * fnm = NULL;

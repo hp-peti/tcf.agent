@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2011, 2014 Wind River Systems, Inc. and others.
+ * Copyright (c) 2011, 2017 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -268,6 +268,11 @@ int address_to_line(Context * ctx, ContextAddress addr0, ContextAddress addr1, L
     unsigned h;
     Trap trap;
 
+    if (cache_channel() == NULL) {
+        /* This is needed for run control to work without a client connected */
+        return 0;
+    }
+
     if (!set_trap(&trap)) return -1;
 
     ctx = context_get_group(ctx, CONTEXT_GROUP_SYMBOLS);
@@ -311,7 +316,7 @@ int address_to_line(Context * ctx, ContextAddress addr0, ContextAddress addr1, L
     }
     else if (entry->error != NULL) {
         exception(set_fmt_errno(set_error_report_errno(entry->error),
-            "Text position not found for address 0x%" PRIX64"..0x%" PRIX64, (uint64_t)addr0, (uint64_t)addr1));
+            "Text position not found for address %#" PRIx64 "..%#" PRIx64, (uint64_t)addr0, (uint64_t)addr1));
     }
     else {
         unsigned i;

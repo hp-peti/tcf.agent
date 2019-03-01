@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2013, 2017 Xilinx, Inc. and others.
+ * Copyright (c) 2013-2019 Xilinx, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -39,23 +39,24 @@
 #if ENABLE_DebugContext
 
 #include <assert.h>
-#include <tcf/framework/errors.h>
-#include <tcf/framework/cpudefs.h>
 #include <tcf/framework/context.h>
 #include <tcf/framework/myalloc.h>
 #include <tcf/framework/trace.h>
+#include <tcf/services/symbols.h>
 #include <tcf/services/stacktrace.h>
 #include <machine/arm/tcf/stack-crawl-arm.h>
 
 #define USE_MEM_CACHE        1
 #define MEM_HASH_SIZE       61
 #define BRANCH_LIST_SIZE    32
-#define REG_DATA_SIZE       16
+#define REG_DATA_SIZE      168
 
 #define REG_VAL_FRAME        1
 #define REG_VAL_ADDR         2
 #define REG_VAL_STACK        3
 #define REG_VAL_OTHER        4
+
+#define REG_ID_CPSR        128
 
 typedef struct {
     uint32_t v;
@@ -72,8 +73,6 @@ typedef struct {
 typedef struct {
     uint32_t addr;
     RegData reg_data[REG_DATA_SIZE];
-    RegData cpsr_data;
-    RegData spsr_data;
     MemData mem_data;
 } BranchData;
 
@@ -85,9 +84,7 @@ typedef struct {
 static unsigned cpu_type = 0;
 static Context * stk_ctx = NULL;
 static StackFrame * stk_frame = NULL;
-static RegData reg_data[16];
-static RegData cpsr_data;
-static RegData spsr_data;
+static RegData reg_data[REG_DATA_SIZE];
 static MemData mem_data;
 static unsigned mem_cache_idx = 0;
 static int trace_return = 0;
@@ -142,6 +139,7 @@ static int read_byte(uint32_t addr, uint8_t * bt) {
         }
         c->size = info.size_valid;
 #else
+        c->size = 0;
         return -1;
 #endif
     }
@@ -279,7 +277,11 @@ static int chk_loaded(int r) {
     if (reg_data[r].o == REG_VAL_FRAME) {
         uint64_t v = 0;
         RegisterDefinition * def = get_reg_definitions(stk_ctx) + reg_data[r].v;
-        if (read_reg_value(stk_frame, def, &v) < 0) return -1;
+        if (read_reg_value(stk_frame, def, &v) < 0) {
+            if (stk_frame->is_top_frame) return -1;
+            reg_data[r].o = 0;
+            return 0;
+        }
         reg_data[r].v = (uint32_t)v;
         reg_data[r].o = REG_VAL_OTHER;
         return 0;
@@ -337,8 +339,6 @@ static void add_branch(uint32_t addr) {
             BranchData * b = branch_data + branch_cnt++;
             b->addr = addr;
             b->mem_data = mem_data;
-            b->cpsr_data = cpsr_data;
-            b->spsr_data = spsr_data;
             memcpy(b->reg_data, reg_data, sizeof(reg_data));
             b->reg_data[15].v = addr;
         }
@@ -391,19 +391,6 @@ static int is_banked_reg_visible(RegisterDefinition * def, unsigned mode) {
     return -1;
 }
 
-static int search_reg_value(StackFrame * frame, RegisterDefinition * def, uint64_t * v) {
-    for (;;) {
-        int n;
-        if (read_reg_value(frame, def, v) == 0) return 0;
-        if (frame->is_top_frame) break;
-        n = get_next_frame(frame->ctx, get_info_frame(frame->ctx, frame));
-        /* Avoid calling stack tracing recursively, use cached frame info */
-        if (get_cached_frame_info(frame->ctx, n, &frame) < 0) break;
-    }
-    errno = ERR_OTHER;
-    return -1;
-}
-
 static uint32_t calc_shift(uint32_t shift_type, uint32_t shift_imm, uint32_t val) {
     switch (shift_type) {
     case 0: /* logical left */
@@ -432,8 +419,8 @@ static uint32_t calc_shift(uint32_t shift_type, uint32_t shift_imm, uint32_t val
         if (shift_imm == 0) {
             /* Rotate right with extend */
             val = val >> 1;
-            assert(cpsr_data.o == REG_VAL_OTHER);
-            if (cpsr_data.v & (1 << 29)) val |= 0x80000000;
+            assert(reg_data[REG_ID_CPSR].o == REG_VAL_OTHER);
+            if (reg_data[REG_ID_CPSR].v & (1 << 29)) val |= 0x80000000;
         }
         else {
             shift_imm &= 0x1f;
@@ -445,23 +432,42 @@ static uint32_t calc_shift(uint32_t shift_type, uint32_t shift_imm, uint32_t val
     return val;
 }
 
+static unsigned get_spsr_id(void) {
+    chk_loaded(REG_ID_CPSR);
+    if (reg_data[REG_ID_CPSR].o == 0) return 0;
+    switch (reg_data[REG_ID_CPSR].v & 0x1f) {
+    case 0x11: /* fiq */ return 129;
+    case 0x12: /* irq */ return 130;
+    case 0x13: /* svc */ return 133;
+    case 0x16: /* mon */ return 134;
+    case 0x17: /* abt */ return 131;
+    case 0x1b: /* und */ return 132;
+    }
+    return 0;
+}
+
 static void return_from_exception(void) {
     /* Return from exception - copies the SPSR to the CPSR */
+    RegisterDefinition * defs = get_reg_definitions(stk_ctx);
     RegisterDefinition * def;
-    for (def = get_reg_definitions(stk_ctx); def->name; def++) {
-        int r = is_banked_reg_visible(def, spsr_data.v & 0x1f);
-        if (r >= 0 && r != is_banked_reg_visible(def, cpsr_data.v & 0x1f)) {
-            uint64_t v = 0;
-            if (search_reg_value(stk_frame, def, &v) < 0) {
-                reg_data[r].o = 0;
-            }
-            else {
-                reg_data[r].v = (uint32_t)v;
-                reg_data[r].o = REG_VAL_OTHER;
-            }
+    unsigned spsr_id = get_spsr_id();
+    if (spsr_id == 0) {
+        reg_data[REG_ID_CPSR].o = 0;
+        return;
+    }
+    chk_loaded(spsr_id);
+    for (def = defs; def->name; def++) {
+        int r = is_banked_reg_visible(def, reg_data[spsr_id].v & 0x1f);
+        if (r <= 0) continue;
+        if (reg_data[def->dwarf_id].o) {
+            reg_data[r] = reg_data[def->dwarf_id];
+        }
+        else {
+            reg_data[r].v = (uint32_t)(def - defs);
+            reg_data[r].o = REG_VAL_FRAME;
         }
     }
-    cpsr_data = spsr_data;
+    reg_data[REG_ID_CPSR] = reg_data[spsr_id];
 }
 
 static void bx_write_pc(void) {
@@ -473,19 +479,19 @@ static void bx_write_pc(void) {
     }
     /* Determine the new mode */
     if (reg_data[15].o) {
-        int thumb_ee = (cpsr_data.v & 0x01000000) && (cpsr_data.v & 0x00000020);
+        int thumb_ee = (reg_data[REG_ID_CPSR].v & 0x01000000) && (reg_data[REG_ID_CPSR].v & 0x00000020);
         if (thumb_ee) {
             /* Remaining in ThumbEE state */
             reg_data[15].v &= ~0x1u;
         }
         else if ((reg_data[15].v & 0x1u) != 0) {
             /* Branch to Thumb */
-            cpsr_data.v |= 0x00000020;
+            reg_data[REG_ID_CPSR].v |= 0x00000020;
             reg_data[15].v &= ~0x1u;
         }
         else if ((reg_data[15].v & 0x2u) == 0) {
             /* Branch to ARM */
-            cpsr_data.v &= ~0x00000020;
+            reg_data[REG_ID_CPSR].v &= ~0x00000020;
         }
     }
 }
@@ -545,7 +551,7 @@ static void trace_rfe(int wback, int inc, int wordhigher, uint32_t mode) {
 static int trace_ldm_stm(int cond, uint32_t rn, uint32_t regs, int P, int U, int S, int W, int L) {
     uint32_t addr = 0;
     int addr_valid = 0;
-    uint32_t rn_bank = cpsr_data.v & 0x1f;
+    uint32_t rn_bank = reg_data[REG_ID_CPSR].v & 0x1f;
     unsigned banked = 0;
     uint8_t r;
 
@@ -562,7 +568,7 @@ static int trace_ldm_stm(int cond, uint32_t rn, uint32_t regs, int P, int U, int
             return_from_exception();
         }
         else {
-            switch (cpsr_data.v & 0x1f) {
+            switch (reg_data[REG_ID_CPSR].v & 0x1f) {
             case 0x11:
                 banked = 0x7f00;
                 break;
@@ -629,7 +635,7 @@ static int trace_ldm_stm(int cond, uint32_t rn, uint32_t regs, int P, int U, int
     }
 
     /* Check the writeback bit */
-    if (addr_valid && W && rn_bank == (cpsr_data.v & 0x1f)) {
+    if (addr_valid && W && rn_bank == (reg_data[REG_ID_CPSR].v & 0x1f)) {
         reg_data[rn].o = cond ? 0: REG_VAL_OTHER;
         reg_data[rn].v = addr;
     }
@@ -709,7 +715,7 @@ static int trace_thumb_load_store_32(uint16_t instr, uint16_t suffix) {
         /* Load/store register dual */
         uint32_t rn = instr & 0xf;
         chk_loaded(rn);
-        if (reg_data[rn].o == REG_VAL_OTHER) {
+        if (reg_data[rn].o) {
             int L = (instr & (1u << 4)) != 0;
             int W = (instr & (1u << 5)) != 0;
             int U = (instr & (1u << 7)) != 0;
@@ -738,6 +744,30 @@ static int trace_thumb_load_store_32(uint16_t instr, uint16_t suffix) {
 
     if ((instr & 0xfff0) == 0xe8d0 && (suffix & 0x00e0) == 0x0000) {
         /* Table Branch */
+        uint32_t rn = instr & 0xf;
+        uint32_t rm = suffix & 0xf;
+        int H = (suffix & (1 << 4)) != 0;
+        chk_loaded(rn);
+        chk_loaded(rm);
+        if (reg_data[rn].o && reg_data[rm].o) {
+            uint32_t addr = reg_data[rn].v;
+            uint32_t offs = reg_data[rm].v;
+            if (rn == 15) addr += 4;
+            if (H) {
+                uint16_t offs16 = 0;
+                if (read_half(addr + (offs << 1), &offs16) < 0) return -1;
+                offs = offs16;
+            }
+            else {
+                uint8_t offs8 = 0;
+                if (read_byte(addr + offs, &offs8) < 0) return -1;
+                offs = offs8;
+            }
+            reg_data[15].v = reg_data[15].v + offs * 2 + 4;
+        }
+        else {
+            reg_data[15].o = 0;
+        }
         return 0;
     }
 
@@ -1449,9 +1479,20 @@ static void trace_arm_branch_instruction(uint32_t instr) {
 
 static void trace_arm_mrs_msr(uint32_t instr) {
     uint32_t cond = (instr >> 28) & 0xf;
-    RegData * psr = instr & (1 << 22) ? &spsr_data : &cpsr_data;
+    RegData * psr = &reg_data[REG_ID_CPSR];
+    if (instr & (1 << 22)) {
+        unsigned spsr_id = get_spsr_id();
+        if (spsr_id == 0) {
+            if ((instr & (1 << 21)) == 0) {
+                uint32_t rd = (instr & 0x0000f000) >> 12;
+                reg_data[rd].o = 0;
+            }
+            return;
+        }
+        psr = &reg_data[spsr_id];
+    }
     if (instr & (1 << 21)) {
-        uint8_t rn = instr & 0xf;
+        uint32_t rn = instr & 0xf;
         if (cond != 14) {
             psr->o = 0;
         }
@@ -1475,7 +1516,7 @@ static void trace_arm_mrs_msr(uint32_t instr) {
         }
     }
     else {
-        uint8_t rd = (instr & 0x0000f000) >> 12;
+        uint32_t rd = (instr & 0x0000f000) >> 12;
         if (cond != 14) {
             reg_data[rd].o = 0;
         }
@@ -1487,18 +1528,18 @@ static void trace_arm_mrs_msr(uint32_t instr) {
 
 static void trace_arm_cps(uint32_t instr) {
     if (instr & (1 << 17)) {
-        uint32_t m0 = cpsr_data.v & ~0x1f;
+        uint32_t m0 = reg_data[REG_ID_CPSR].v & 0x1f;
         uint32_t m1 = instr & 0x1f;
-        if (m0 != m1) {
-            unsigned i;
-            if (m0 == 0x11 || m1 == 0x11) {
-                for (i = 8; i < 15; i++) reg_data[i].o = 0;
-            }
-            else if ((m0 >= 0x12 && m0 < 0x1b) || (m1 >= 0x12 && m1 <= 0x1b)) {
-                for (i = 13; i < 15; i++) reg_data[i].o = 0;
-            }
-            cpsr_data.v = (cpsr_data.v & ~m0) | m1;
+        RegisterDefinition * def;
+        for (def = get_reg_definitions(stk_ctx); def->name; def++) {
+            int r = is_banked_reg_visible(def, m0);
+            if (r > 0) reg_data[def->dwarf_id] = reg_data[r];
         }
+        for (def = get_reg_definitions(stk_ctx); def->name; def++) {
+            int r = is_banked_reg_visible(def, m1);
+            if (r > 0) reg_data[r] = reg_data[def->dwarf_id];
+        }
+        reg_data[REG_ID_CPSR].v = (reg_data[REG_ID_CPSR].v & ~m0) | m1;
     }
 }
 
@@ -1691,6 +1732,15 @@ static void trace_arm_extra_ldr_str(uint32_t instr) {
     }
 }
 
+static uint32_t modified_immediate_constant(uint32_t instr) {
+    uint8_t shift_dist  = (instr & 0x0f00) >> 8;
+    uint8_t shift_const = (instr & 0x00ff);
+
+    /* rotate const right by 2 * shift_dist */
+    shift_dist *= 2;
+    return (shift_const >> shift_dist) | (shift_const << (32 - shift_dist));
+}
+
 static void trace_arm_data_processing_instr(uint32_t instr) {
     uint32_t cond = (instr >> 28) & 0xf;
     int I = (instr & 0x02000000) != 0;
@@ -1704,13 +1754,7 @@ static void trace_arm_data_processing_instr(uint32_t instr) {
 
     /* Decode operand 2 */
     if (I) {
-        uint8_t shift_dist  = (operand2 & 0x0f00) >> 8;
-        uint8_t shift_const = (operand2 & 0x00ff);
-
-        /* rotate const right by 2 * shift_dist */
-        shift_dist *= 2;
-        op2val    = (shift_const >> shift_dist) |
-                    (shift_const << (32 - shift_dist));
+        op2val    = modified_immediate_constant(operand2);
         op2origin = REG_VAL_OTHER;
     }
     else {
@@ -1782,14 +1826,14 @@ static void trace_arm_data_processing_instr(uint32_t instr) {
             case 3: /* rotate right */
                 if (!reg_shift && shift_dist == 0) {
                     /* Rotate right with extend */
-                    if (cpsr_data.o == 0) {
+                    if (reg_data[REG_ID_CPSR].o == 0) {
                         op2origin = 0;
                         op2val = 0;
                     }
                     else {
                         op2val = op2val >> 1;
-                        assert(cpsr_data.o == REG_VAL_OTHER);
-                        if (cpsr_data.v & (1 << 29)) op2val |= 0x80000000;
+                        assert(reg_data[REG_ID_CPSR].o == REG_VAL_OTHER);
+                        if (reg_data[REG_ID_CPSR].v & (1 << 29)) op2val |= 0x80000000;
                     }
                 }
                 else {
@@ -1864,7 +1908,7 @@ static void trace_arm_data_processing_instr(uint32_t instr) {
     case  6: /* SBC: Rd:= Op1 - Op2 + C */
     case  7: /* RSC: Rd:= Op2 - Op1 + C */
         chk_loaded(rn);
-        if (cpsr_data.o && reg_data[rn].o && op2origin && cond == 14) {
+        if (reg_data[REG_ID_CPSR].o && reg_data[rn].o && op2origin && cond == 14) {
             reg_data[rd].o = REG_VAL_OTHER;
         }
         else {
@@ -1920,15 +1964,15 @@ static void trace_arm_data_processing_instr(uint32_t instr) {
         break;
     case  5: /* ADC: Rd:= Op1 + Op2 + C */
         reg_data[rd].v = op1val + op2val;
-        if (cpsr_data.v & (1 << 29)) reg_data[rd].v++;
+        if (reg_data[REG_ID_CPSR].v & (1 << 29)) reg_data[rd].v++;
         break;
     case  6: /* SBC: Rd:= Op1 - Op2 + C */
         reg_data[rd].v = op1val - op2val;
-        if (cpsr_data.v & (1 << 29)) reg_data[rd].v++;
+        if (reg_data[REG_ID_CPSR].v & (1 << 29)) reg_data[rd].v++;
         break;
     case  7: /* RSC: Rd:= Op2 - Op1 + C */
         reg_data[rd].v = op2val - op1val;
-        if (cpsr_data.v & (1 << 29)) reg_data[rd].v++;
+        if (reg_data[REG_ID_CPSR].v & (1 << 29)) reg_data[rd].v++;
         break;
     case  8: /* TST: set condition codes on Op1 AND Op2 */
     case  9: /* TEQ: set condition codes on Op1 EOR Op2 */
@@ -1967,6 +2011,7 @@ static void trace_arm_data_processing_instr(uint32_t instr) {
 
     if (rd == 15 && (instr & (1 << 20)) != 0) {
         return_from_exception();
+        trace_return = 1;
     }
 }
 
@@ -2211,7 +2256,7 @@ static int trace_arm(void) {
         unsigned i;
         /* Unknown/undecoded. May alter some register, so invalidate file */
         for (i = 0; i < 11; i++) reg_data[i].o = 0;
-        trace(LOG_STACK, "Stack crawl: unknown ARM A32 instruction %08x", instr);
+        trace(LOG_STACK, "Stack crawl: unknown ARM A32 instruction %08" PRIx32, instr);
     }
 
     if (!trace_return && !trace_branch) {
@@ -2228,18 +2273,43 @@ static int trace_instructions(void) {
     RegData org_lr = reg_data[14];
     RegData org_pc = reg_data[15];
     RegData org_4to11[8];
-    RegData org_cpsr = cpsr_data;
-    RegData org_spsr = spsr_data;
+    RegData org_cpsr = reg_data[REG_ID_CPSR];
+    unsigned org_spsr_id = get_spsr_id();
+    RegData org_spsr;
+    uint32_t func_addr = 0;
+    uint32_t func_size = 0;
+
+    memcpy(org_4to11, reg_data + 4, sizeof(org_4to11));
+    memset(&org_spsr, 0, sizeof(org_spsr));
+    if (org_spsr_id > 0) org_spsr = reg_data[org_spsr_id];
+
+#if ENABLE_Symbols
+    if (chk_loaded(15) == 0) {
+        Symbol * sym = NULL;
+        int sym_class = SYM_CLASS_UNKNOWN;
+        ContextAddress sym_addr = reg_data[15].v;
+        ContextAddress sym_size = 0;
+        if (sym_addr > 0 && !stk_frame->is_top_frame) sym_addr--;
+        if (find_symbol_by_addr(stk_ctx, STACK_NO_FRAME, sym_addr, &sym) == 0 &&
+                get_symbol_class(sym, &sym_class) == 0 && sym_class == SYM_CLASS_FUNCTION &&
+                get_symbol_size(sym, &sym_size) == 0 && sym_size != 0 &&
+                get_symbol_address(sym, &sym_addr) == 0 && sym_addr != 0 &&
+                sym_addr + sym_size <= 0x100000000) {
+            func_addr = (uint32_t)sym_addr;
+            func_size = (uint32_t)sym_size;
+            trace(LOG_STACK, "Function symbol: addr 0x%08" PRIx32 ", size 0x%08" PRIx32, func_addr, func_size);
+        }
+    }
+#endif
 
     TRACE_INSTRUCTIONS_HOOK;
 
-    memcpy(org_4to11, reg_data + 4, sizeof(org_4to11));
     for (;;) {
         unsigned t = 0;
         BranchData * b = NULL;
         if (chk_loaded(13) < 0) return -1;
         if (chk_loaded(15) < 0) return -1;
-        trace(LOG_STACK, "Stack crawl: pc 0x%08x, sp 0x%08x",
+        trace(LOG_STACK, "Stack crawl: pc 0x%08" PRIx32 ", sp 0x%08" PRIx32,
             reg_data[15].o ? reg_data[15].v : 0,
             reg_data[13].o ? reg_data[13].v : 0);
         for (t = 0; t < 200; t++) {
@@ -2255,8 +2325,12 @@ static int trace_instructions(void) {
             else if (!reg_data[15].v) {
                 error = set_errno(ERR_OTHER, "PC == 0");
             }
-            else if (!cpsr_data.o) {
+            else if (!reg_data[REG_ID_CPSR].o) {
                 error = set_errno(ERR_OTHER, "CPSR value not available");
+            }
+            else if (func_size > 0 && (reg_data[15].v < func_addr ||
+                    (func_addr + func_size > func_addr && reg_data[15].v >= func_addr + func_size))) {
+                error = set_errno(ERR_OTHER, "PC outside current function");
             }
             else {
                 int r = 0;
@@ -2266,8 +2340,8 @@ static int trace_instructions(void) {
                     flag_t = 1 << 24;
                     flag_j = 0;
                 }
-                if (cpsr_data.v & flag_j) r = trace_jazelle();
-                else if (cpsr_data.v & flag_t) r = trace_thumb();
+                if (reg_data[REG_ID_CPSR].v & flag_j) r = trace_jazelle();
+                else if (reg_data[REG_ID_CPSR].v & flag_t) r = trace_thumb();
                 else r = trace_arm();
                 if (r < 0) error = errno;
             }
@@ -2298,13 +2372,65 @@ static int trace_instructions(void) {
         if (branch_pos >= branch_cnt) break;
         b = branch_data + branch_pos++;
         mem_data = b->mem_data;
-        cpsr_data = b->cpsr_data;
-        spsr_data = b->spsr_data;
         memcpy(reg_data, b->reg_data, sizeof(reg_data));
     }
     trace(LOG_STACK, "Stack crawl: Function epilogue not found");
 
     EPILOGUE_NOT_FOUND_HOOK;
+
+    if (func_size > 12 && (func_addr & 0x3) == 0) {
+        unsigned n = 0;
+        /* Check for common ARM prologue pattern */
+        while (n < 3 && n < func_size / 4 - 1) {
+            uint32_t instr = 0;
+            uint32_t push_regs = 0;
+            if (read_word(func_addr + n * 4, &instr) < 0) break;
+            if ((instr & 0xffffe000) == 0xe92d4000) {
+                /* PUSH {..., lr} */
+                push_regs = instr & 0xffff;
+            }
+            else if ((instr & 0xffffffff) == 0xe52de004) {
+                /* PUSH {lr} */
+                push_regs |= 1 << 14;
+            }
+            if (push_regs) {
+                reg_data[13] = org_sp;
+                if (chk_loaded(13) == 0) {
+                    uint32_t addr = reg_data[13].v;
+                    while (n < 8 && n < func_size / 4 - 1) {
+                        if (read_word(func_addr + n * 4, &instr) < 0) break;
+                        if ((instr  & 0xfffff000) == 0xe24dd000) {
+                            /* SUB sp, sp, #... */
+                            addr += modified_immediate_constant(instr);
+                            break;
+                        }
+                        n++;
+                    }
+                    for (i = 0; i < 16; i++) {
+                        if (push_regs & (1 << i)) {
+                            reg_data[i].o = REG_VAL_STACK;
+                            reg_data[i].v = addr;
+                            addr += 4;
+                        }
+                        else if (i >= 4 && i <= 11) { /* Local variables */
+                            reg_data[i] = org_4to11[i - 4];
+                        }
+                        else {
+                            reg_data[i].o = 0;
+                        }
+                    }
+                    reg_data[13].o = REG_VAL_OTHER;
+                    reg_data[13].v = addr;
+                    reg_data[15] = reg_data[14];
+                    reg_data[14].o = 0;
+                    bx_write_pc();
+                    return 0;
+                }
+                break;
+            }
+            n++;
+        }
+    }
 
     for (i = 0; i < REG_DATA_SIZE; i++) {
         if (i >= 4 && i <= 11) { /* Local variables */
@@ -2314,14 +2440,12 @@ static int trace_instructions(void) {
             reg_data[i].o = 0;
         }
     }
-    cpsr_data.o = 0;
-    spsr_data.o = 0;
-    if (org_cpsr.o && org_spsr.o && org_lr.o) {
-        cpsr_data = org_cpsr;
-        spsr_data = org_spsr;
+    if (org_cpsr.o && org_spsr.o && ((org_cpsr.v & 0x1f) > 0x10) && org_lr.o) {
+        reg_data[REG_ID_CPSR] = org_cpsr;
+        reg_data[org_spsr_id] = org_spsr;
         reg_data[15] = org_lr;
-        bx_write_pc();
         return_from_exception();
+        bx_write_pc();
         return 0;
     }
     if (org_sp.v != 0 && org_lr.v != 0 && org_pc.v != org_lr.v) {
@@ -2335,7 +2459,7 @@ static int trace_instructions(void) {
 static int trace_frame(StackFrame * frame, StackFrame * down) {
     RegisterDefinition * defs = get_reg_definitions(frame->ctx);
     RegisterDefinition * def = NULL;
-    int spsr_id = -1;
+    unsigned spsr_id = 0;
 
 #if USE_MEM_CACHE
     unsigned i;
@@ -2344,71 +2468,35 @@ static int trace_frame(StackFrame * frame, StackFrame * down) {
 
     stk_ctx = frame->ctx;
     stk_frame = frame;
-    memset(&cpsr_data, 0, sizeof(cpsr_data));
-    memset(&spsr_data, 0, sizeof(spsr_data));
     memset(&reg_data, 0, sizeof(reg_data));
     memset(&mem_data, 0, sizeof(mem_data));
     branch_pos = 0;
     branch_cnt = 0;
 
     for (def = defs; def->name; def++) {
-        uint64_t v = 0;
-        if (def->dwarf_id == 128) {
-            if (search_reg_value(frame, def, &v) < 0) continue;
-            cpsr_data.v = (uint32_t)v;
-            cpsr_data.o = REG_VAL_OTHER;
-            switch (cpsr_data.v & 0x1f) {
-            case 0x11: /* fiq */ spsr_id = 129; break;
-            case 0x12: /* irq */ spsr_id = 130; break;
-            case 0x13: /* svc */ spsr_id = 133; break;
-            case 0x16: /* mon */ spsr_id = 134; break;
-            case 0x17: /* abt */ spsr_id = 131; break;
-            case 0x1b: /* und */ spsr_id = 132; break;
-            }
-        }
-        else if (def->dwarf_id == 13 || def->dwarf_id == 15) {
-            if (read_reg_value(frame, def, &v) < 0) return -1;
+        if (def->dwarf_id >= 13 && def->dwarf_id <= 15) {
+            uint64_t v = 0;
+            if (read_reg_value(frame, def, &v) < 0) continue;
             reg_data[def->dwarf_id].v = (uint32_t)v;
             reg_data[def->dwarf_id].o = REG_VAL_OTHER;
         }
-        else if (def->dwarf_id >= 0 && def->dwarf_id <= 14) {
+        else if (def->dwarf_id >= 0 && def->dwarf_id < REG_DATA_SIZE) {
             reg_data[def->dwarf_id].v = (uint32_t)(def - defs);
             reg_data[def->dwarf_id].o = REG_VAL_FRAME;
         }
     }
 
-    if (spsr_id > 0) {
-        for (def = defs; def->name; def++) {
-            uint64_t v = 0;
-            if (def->dwarf_id == spsr_id) {
-                if (search_reg_value(frame, def, &v) < 0) continue;
-                spsr_data.v = (uint32_t)v;
-                spsr_data.o = REG_VAL_OTHER;
-            }
-        }
-    }
+    spsr_id = get_spsr_id();
+    if ((spsr_id == 0 || reg_data[spsr_id].o == 0) && reg_data[13].v == 0) return 0;
 
     if (trace_instructions() < 0) return -1;
 
     for (def = defs; def->name; def++) {
-        if (def->dwarf_id == 128) {
-            if (!cpsr_data.o) continue;
-            if (write_reg_value(down, def, cpsr_data.v) < 0) return -1;
+        if (reg_data[REG_ID_CPSR].o && def->dwarf_id >= 144) {
+            int r = is_banked_reg_visible(def, reg_data[REG_ID_CPSR].v & 0x1f);
+            if (r > 0) reg_data[def->dwarf_id] = reg_data[r];
         }
-        else if (spsr_id > 0 && def->dwarf_id == spsr_id) {
-            if (!spsr_data.o) continue;
-            if (write_reg_value(down, def, spsr_data.v) < 0) return -1;
-        }
-        else if (def->dwarf_id >= 151 && def->dwarf_id <= 167) {
-            int r = 0;
-            if (!cpsr_data.o) continue;
-            if ((r = is_banked_reg_visible(def, cpsr_data.v & 0x1f)) >= 0) {
-                if (chk_loaded(r) < 0) continue;
-                if (!reg_data[r].o) continue;
-                if (write_reg_value(down, def, reg_data[r].v) < 0) return -1;
-            }
-        }
-        else if (def->dwarf_id >= 0 && def->dwarf_id <= 15) {
+        if (def->dwarf_id >= 0 && def->dwarf_id < REG_DATA_SIZE) {
             int r = def->dwarf_id;
 #if ENABLE_StackRegisterLocations
             if (r < 13 && (reg_data[r].o == REG_VAL_ADDR || reg_data[r].o == REG_VAL_STACK)) {
@@ -2426,6 +2514,15 @@ static int trace_frame(StackFrame * frame, StackFrame * down) {
                 cmds[1].cmd = SFT_CMD_RD_MEM;
                 cmds[1].args.mem.size = 4;
                 if (write_reg_location(down, def, cmds, 2) == 0) {
+                    down->has_reg_data = 1;
+                    continue;
+                }
+            }
+            else if (r != 13 && reg_data[r].o == REG_VAL_FRAME) {
+                LocationExpressionCommand * cmds = (LocationExpressionCommand *)tmp_alloc_zero(sizeof(LocationExpressionCommand));
+                cmds[0].cmd = SFT_CMD_RD_REG;
+                cmds[0].args.reg = defs + reg_data[r].v;
+                if (write_reg_location(down, def, cmds, 1) == 0) {
                     down->has_reg_data = 1;
                     continue;
                 }

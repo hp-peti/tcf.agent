@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2013 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2019 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -23,8 +23,6 @@
 #include <errno.h>
 #include <assert.h>
 #include <string.h>
-#include <tcf/framework/protocol.h>
-#include <tcf/framework/channel.h>
 #include <tcf/framework/proxy.h>
 #include <tcf/framework/myalloc.h>
 #include <tcf/framework/events.h>
@@ -35,7 +33,6 @@
 #include <tcf/framework/peer.h>
 #include <tcf/services/discovery.h>
 #include <tcf/services/discovery_udp.h>
-#include <tcf/framework/protocol.h>
 
 #if SERVICE_Locator
 
@@ -51,6 +48,10 @@ static int write_peer_properties(PeerServer * ps, void * arg) {
     json_write_string(out, "ID");
     write_stream(out, ':');
     json_write_string(out, ps->id);
+    write_stream(out, ',');
+    json_write_string(out, "Flags");
+    write_stream(out, ':');
+    json_write_ulong(out, ps->flags);
     for (i = 0; i < ps->ind; i++) {
         write_stream(out, ',');
         json_write_string(out, ps->list[i].name);

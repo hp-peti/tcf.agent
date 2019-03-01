@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2006, 2017 Wind River Systems, Inc. and others.
+ * Copyright (c) 2006-2018 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -53,8 +53,10 @@ typedef struct DIO_AbbrevSet DIO_AbbrevSet;
 
 struct DIO_Cache {
     U1_T * mStringTable;
+    U8_T mStringTableAddr;
     U4_T mStringTableSize;
     DIO_AbbrevSet ** mAbbrevTable;
+    U8_T mAbbrevSectionAddr;
 };
 
 typedef struct DIO_Cache DIO_Cache;
@@ -115,6 +117,10 @@ static DIO_Cache * dio_GetCache(ELF_File * File) {
 
 void dio_EnterSection(DIO_UnitDescriptor * Unit, ELF_Section * Section, U8_T Offset) {
     if (elf_load(Section)) exception(errno);
+    if (Offset > Section->size) {
+        if (Section->name == NULL) exception(ERR_INV_DWARF);
+        str_fmt_exception(ERR_INV_DWARF, "Invalid offset in '%s' section", Section->name);
+    }
     sSection = Section;
     sData = (U1_T *)Section->data;
     sDataPos = Offset;
@@ -312,7 +318,7 @@ char * dio_ReadString(void) {
     return Res;
 }
 
-static U1_T * dio_LoadStringTable(ELF_File * File, U4_T * StringTableSize) {
+static U1_T * dio_LoadStringTable(ELF_File * File, U8_T * StringTableAddr, U4_T * StringTableSize) {
     DIO_Cache * Cache = dio_GetCache(File);
 
     if (Cache->mStringTable == NULL) {
@@ -333,22 +339,23 @@ static U1_T * dio_LoadStringTable(ELF_File * File, U4_T * StringTableSize) {
             str_exception(ERR_INV_DWARF, "Section .debug_str not found");
         }
 
-        Cache->mStringTableSize = (size_t)Section->size;
         if (elf_load(Section) < 0) {
             str_exception(errno, "Cannot read .debug_str section");
         }
+
+        Cache->mStringTableAddr = Section->addr;
+        Cache->mStringTableSize = (size_t)Section->size;
         Cache->mStringTable = (U1_T *)Section->data;
     }
 
+    *StringTableAddr = Cache->mStringTableAddr;
     *StringTableSize = Cache->mStringTableSize;
     return Cache->mStringTable;
 }
 
-static U1_T * dio_LoadAltStringTable(ELF_File * File, U4_T * StringTableSize) {
-    if (File->dwz_file == NULL) {
-        str_exception(errno, "Cannot open DWZ file");
-    }
-    return dio_LoadStringTable(File->dwz_file, StringTableSize);
+static U1_T * dio_LoadAltStringTable(ELF_File * File, U8_T * StringTableAddr, U4_T * StringTableSize) {
+    if (File->dwz_file == NULL) str_exception(errno, "Cannot open DWZ file");
+    return dio_LoadStringTable(File->dwz_file, StringTableAddr, StringTableSize);
 }
 
 static void dio_ReadFormAddr(void) {
@@ -408,9 +415,10 @@ static void dio_ReadFormString(void) {
 }
 
 static void dio_ReadFormStringRef(void) {
-    U8_T Offset = dio_ReadAddressX(&dio_gFormSection, sUnit->m64bit ? 8 : 4);
+    U8_T StringTableAddr = 0;
     U4_T StringTableSize = 0;
-    U1_T * StringTable = dio_LoadStringTable(sSection->file, &StringTableSize);
+    U1_T * StringTable = dio_LoadStringTable(sSection->file, &StringTableAddr, &StringTableSize);
+    U8_T Offset = dio_ReadAddressX(&dio_gFormSection, sUnit->m64bit ? 8 : 4) - StringTableAddr;
     dio_gFormDataAddr = StringTable + Offset;
     dio_gFormDataSize = 1;
     for (;;) {
@@ -423,9 +431,10 @@ static void dio_ReadFormStringRef(void) {
 }
 
 static void dio_ReadFormAltStringRef(void) {
-    U8_T Offset = dio_ReadAddressX(&dio_gFormSection, sUnit->m64bit ? 8 : 4);
+    U8_T StringTableAddr = 0;
     U4_T StringTableSize = 0;
-    U1_T * StringTable = dio_LoadAltStringTable(sSection->file, &StringTableSize);
+    U1_T * StringTable = dio_LoadAltStringTable(sSection->file, &StringTableAddr, &StringTableSize);
+    U8_T Offset = dio_ReadAddressX(&dio_gFormSection, sUnit->m64bit ? 8 : 4) - StringTableAddr;
     dio_gFormDataAddr = StringTable + Offset;
     dio_gFormDataSize = 1;
     for (;;) {
@@ -616,6 +625,7 @@ void dio_ReadUnit(DIO_UnitDescriptor * Unit, DIO_EntryCallBack CallBack) {
     sUnit->m64bit = 0;
     if (strcmp(sSection->name, ".debug") != 0) {
         ELF_Section * Sect = NULL;
+        DIO_Cache * Cache = dio_GetCache(sSection->file);
         sUnit->mUnitSize = dio_ReadU4();
         if (sUnit->mUnitSize == 0xffffffffu) {
             sUnit->m64bit = 1;
@@ -627,6 +637,7 @@ void dio_ReadUnit(DIO_UnitDescriptor * Unit, DIO_EntryCallBack CallBack) {
         }
         sUnit->mVersion = dio_ReadU2();
         sUnit->mAbbrevTableOffs = dio_ReadAddressX(&Sect, sUnit->m64bit ? 8 : 4);
+        sUnit->mAbbrevTableOffs -= Cache->mAbbrevSectionAddr;
         sUnit->mAddressSize = dio_ReadU1();
         if (strcmp(sSection->name, ".debug_types") == 0) {
             sUnit->mTypeSignature = dio_ReadU8();
@@ -638,7 +649,7 @@ void dio_ReadUnit(DIO_UnitDescriptor * Unit, DIO_EntryCallBack CallBack) {
         sUnit->mVersion = 1;
         sUnit->mAddressSize = 4;
     }
-    sAddressSize = Unit->mAddressSize;
+    sAddressSize = sUnit->mAddressSize;
     if (sUnit->mVersion < 3) sRefAddressSize = sUnit->mAddressSize;
     else sRefAddressSize = sUnit->m64bit ? 8 : 4;
     while (sUnit->mUnitSize == 0 || sDataPos < sUnit->mUnitOffs + sUnit->mUnitSize) {
@@ -650,7 +661,6 @@ void dio_ReadUnit(DIO_UnitDescriptor * Unit, DIO_EntryCallBack CallBack) {
 #define dio_AbbrevTableHash(Offset) (((unsigned)(Offset)) / 16 % ABBREV_TABLE_SIZE)
 
 void dio_LoadAbbrevTable(ELF_File * File) {
-    U4_T ID;
     U8_T TableOffset = 0;
     ELF_Section * Section = NULL;
     static U2_T * AttrBuf = NULL;
@@ -659,19 +669,21 @@ void dio_LoadAbbrevTable(ELF_File * File) {
     static U4_T AbbrevBufSize = 0;
     U4_T AbbrevBufPos = 0;
     DIO_Cache * Cache = dio_GetCache(File);
+    unsigned i;
 
     if (Cache->mAbbrevTable != NULL) return;
     Cache->mAbbrevTable = (DIO_AbbrevSet **)loc_alloc_zero(sizeof(DIO_AbbrevSet *) * ABBREV_TABLE_SIZE);
 
-    for (ID = 1; ID < File->section_cnt; ID++) {
-        if (strcmp(File->sections[ID].name, ".debug_abbrev") == 0) {
+    for (i = 1; i < File->section_cnt; i++) {
+        if (strcmp(File->sections[i].name, ".debug_abbrev") == 0) {
             if (Section != NULL) {
                 str_exception(ERR_INV_DWARF, "More then one .debug_abbrev section in a file");
             }
-            Section = File->sections + ID;
+            Section = File->sections + i;
         }
     }
     if (Section == NULL) return;
+    Cache->mAbbrevSectionAddr = Section->addr;
     dio_EnterSection(NULL, Section, 0);
     for (;;) {
         U4_T AttrPos = 0;

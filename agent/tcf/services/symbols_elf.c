@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2017 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2019 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -16,10 +16,6 @@
 /*
  * Symbols service - ELF version.
  */
-
-#if defined(__GNUC__) && !defined(_GNU_SOURCE)
-#  define _GNU_SOURCE
-#endif
 
 #include <tcf/config.h>
 
@@ -237,6 +233,24 @@ static int get_sym_context(Context * ctx, int frame, ContextAddress addr) {
     return 0;
 }
 
+static int elf_symbol_has_address(ELF_SymbolInfo * info) {
+    switch (info->type) {
+    case STT_NOTYPE:
+        /* Check if the NOTYPE symbol is for a section allocated in memory */
+        if (info->section_index == SHN_ABS) return 1;
+        if (info->section == NULL) return 0;
+        if ((info->section->flags & SHF_ALLOC) == 0) return 0;
+        if (info->value < info->section->addr) return 0;
+        if (info->value > info->section->addr + info->section->size) return 0;
+        return 1;
+    case STT_OBJECT:
+    case STT_FUNC:
+    case STT_GNU_IFUNC:
+        return 1;
+    }
+    return 0;
+}
+
 int elf_symbol_address(Context * ctx, ELF_SymbolInfo * info, ContextAddress * address) {
     ELF_File * file = info->sym_section->file;
     ELF_Section * sec = NULL;
@@ -248,10 +262,6 @@ int elf_symbol_address(Context * ctx, ELF_SymbolInfo * info, ContextAddress * ad
 
     switch (info->type) {
     case STT_NOTYPE:
-        /* Check if the NOTYPE symbol is for a section allocated in memory */
-        if ((info->section == NULL || (info->section->flags & SHF_ALLOC) == 0)
-           && info->section_index != SHN_ABS) break;
-        /* fall through */
     case STT_OBJECT:
     case STT_FUNC:
         if (info->section_index == SHN_UNDEF) {
@@ -266,6 +276,7 @@ int elf_symbol_address(Context * ctx, ELF_SymbolInfo * info, ContextAddress * ad
             set_errno(ERR_OTHER, "Cannot get address of ELF symbol: the symbol is a common block");
             return -1;
         }
+        if (!elf_symbol_has_address(info)) break;
         if (info->section != NULL) {
             sec = info->section;
             if (file->type == ET_REL) {
@@ -315,12 +326,11 @@ int elf_tcf_symbol(Context * ctx, ELF_SymbolInfo * sym_info, Symbol ** symbol) {
 
     switch (sym_info->type) {
     case STT_NOTYPE:
-        /* Check if the NOTYPE symbol is for a section allocated in memory */
-        if (sym_info->section == NULL || (sym_info->section->flags & SHF_ALLOC) == 0) {
+        if (!elf_symbol_has_address(sym_info)) {
             sym->sym_class = SYM_CLASS_VALUE;
             break;
         }
-        if ((sym_info->section->flags & SHF_EXECINSTR) == 0) {
+        if (sym_info->section == NULL || (sym_info->section->flags & SHF_EXECINSTR) == 0) {
             sym->sym_class = SYM_CLASS_REFERENCE;
             break;
         }
@@ -589,7 +599,7 @@ static void is_assembly_function(Symbol * sym) {
     }
 }
 
-static void object2symbol(ObjectInfo * ref, ObjectInfo * obj, Symbol ** res) {
+void elf_object2symbol(ObjectInfo * ref, ObjectInfo * obj, Symbol ** res) {
     Symbol * sym = alloc_symbol();
     sym->obj = obj;
     switch (obj->mTag) {
@@ -664,6 +674,7 @@ static void object2symbol(ObjectInfo * ref, ObjectInfo * obj, Symbol ** res) {
         sym->sym_class = SYM_CLASS_VARIANT;
         break;
     case TAG_label:
+        sym->sym_class = SYM_CLASS_REFERENCE;
         /* LLVM compiler uses TAG_label for assembly functions */
         is_assembly_function(sym);
         if (!sym->assembly_function) break;
@@ -793,7 +804,7 @@ static void evaluate_variable_num_prop(void * x) {
 
     sym_ctx = args->ctx;
     sym_frame = args->frame;
-    object2symbol(NULL, args->ref, &sym);
+    elf_object2symbol(NULL, args->ref, &sym);
     if (is_pointer_type(sym)) {
         if (get_symbol_value(sym, &value, &size, &big_endian) < 0) exception(errno);
         for (i = 0; i < size; i++) {
@@ -829,11 +840,11 @@ static void evaluate_reference_num_prop(void * x) {
     if (sec == NULL) sec = args->obj->mCompUnit->mDesc.mSection;
     obj = find_object(sec, (ContextAddress)v->mValue);
     if (obj == NULL) exception(ERR_INV_DWARF);
-    object2symbol(args->ref, obj, &sym_obj);
+    elf_object2symbol(args->ref, obj, &sym_obj);
     if (get_location_info(sym_obj, &loc_info) < 0) exception(errno);
     if (loc_info->args_cnt > 0) {
         if (loc_info->args_cnt > 1) str_exception(ERR_OTHER, "Invalid location expression");
-        object2symbol(NULL, args->ref, &sym_ref);
+        elf_object2symbol(NULL, args->ref, &sym_ref);
         if (is_pointer_type(sym_ref)) {
             if (get_symbol_value(sym_ref, &value, &size, &big_endian) < 0) exception(errno);
             for (i = 0; i < size; i++) {
@@ -1104,7 +1115,7 @@ static void add_to_find_symbol_buf(Symbol * sym) {
 
 static void add_obj_to_find_symbol_buf(ObjectInfo * obj, unsigned level) {
     Symbol * sym = NULL;
-    object2symbol(NULL, obj, &sym);
+    elf_object2symbol(NULL, obj, &sym);
     add_to_find_symbol_buf(sym);
     sym->level = level;
 }
@@ -1182,6 +1193,7 @@ static int same_namespace(ObjectInfo * x, ObjectInfo * y) {
 static ObjectInfo * find_definition(ObjectInfo * decl) {
     while (decl != NULL) {
         int search_pub_names = 0;
+        int search_ext_only = 0;
         if (decl->mDefinition != NULL) {
             decl = decl->mDefinition;
             continue;
@@ -1197,6 +1209,7 @@ static ObjectInfo * find_definition(ObjectInfo * decl) {
             break;
         default:
             search_pub_names = (decl->mFlags & DOIF_external) != 0;
+            search_ext_only = 1;
             break;
         }
         if (search_pub_names) {
@@ -1212,6 +1225,7 @@ static ObjectInfo * find_definition(ObjectInfo * decl) {
                     if (obj->mTag != decl->mTag) continue;
                     if (obj->mFlags & DOIF_declaration) continue;
                     if (obj->mFlags & DOIF_specification) continue;
+                    if (search_ext_only && (obj->mFlags & DOIF_external) == 0) continue;
                     if (!equ_symbol_names(obj->mName, decl->mName)) continue;
                     if (!cmp_object_profiles(decl, obj)) continue;
                     if (!cmp_object_linkage_names(decl, obj)) continue;
@@ -1286,6 +1300,7 @@ static int find_in_object_tree(ObjectInfo * parent, unsigned level,
         obj = children;
         while (obj != NULL) {
             switch (obj->mTag) {
+            case TAG_namespace:
             case TAG_compile_unit:
             case TAG_partial_unit:
             case TAG_module:
@@ -1775,6 +1790,7 @@ static int find_by_addr_in_unit(ObjectInfo * parent, int level, UnitAddress * ad
     ObjectInfo * obj = get_dwarf_children(parent);
     while (obj != NULL) {
         switch (obj->mTag) {
+        case TAG_namespace:
         case TAG_compile_unit:
         case TAG_partial_unit:
         case TAG_module:
@@ -1787,7 +1803,7 @@ static int find_by_addr_in_unit(ObjectInfo * parent, int level, UnitAddress * ad
         case TAG_subroutine:
         case TAG_subprogram:
             if (check_in_range(obj, addr)) {
-                object2symbol(NULL, obj, res);
+                elf_object2symbol(NULL, obj, res);
                 return 1;
             }
             if (find_by_addr_in_unit(obj, level + 1, addr, ip, res)) return 1;
@@ -1809,7 +1825,7 @@ static int find_by_addr_in_unit(ObjectInfo * parent, int level, UnitAddress * ad
                         exception(errno);
                     }
                     if (lc + sz > addr->rt_addr) {
-                        object2symbol(NULL, obj, res);
+                        elf_object2symbol(NULL, obj, res);
                         return 1;
                     }
                 }
@@ -1825,7 +1841,7 @@ static int is_valid_elf_symbol(ELF_SymbolInfo * info) {
     switch (info->type) {
     case STT_NOTYPE:
         if (info->name != NULL && info->name[0] == '$') break;
-        return 1;
+        return elf_symbol_has_address(info);
     case STT_FUNC:
     case STT_OBJECT:
         return 1;
@@ -1954,6 +1970,7 @@ static void enumerate_local_vars(ObjectInfo * parent, int level,
     ObjectInfo * obj = get_dwarf_children(parent);
     while (obj != NULL) {
         switch (obj->mTag) {
+        case TAG_namespace:
         case TAG_compile_unit:
         case TAG_partial_unit:
         case TAG_module:
@@ -1972,7 +1989,7 @@ static void enumerate_local_vars(ObjectInfo * parent, int level,
         case TAG_variable:
             if (level > 0 && in_range) {
                 call_back->sym = NULL;
-                object2symbol(NULL, find_definition(obj), &call_back->sym);
+                elf_object2symbol(NULL, find_definition(obj), &call_back->sym);
                 if (elf_save_symbols_state(local_vars_call_back, call_back) < 0) exception(errno);
             }
             break;
@@ -2370,10 +2387,11 @@ int get_context_isa(Context * ctx, ContextAddress ip, const char ** isa,
         case EM_MIPS_X     : *isa = "MIPS_X"; break;
         case EM_COLDFIRE   : *isa = "COLDFIRE"; break;
         case EM_X86_64     : *isa = "X86_64"; break;
-        case EM_MICROBLAZE : *isa = "MicroBlaze"; break;
+        case EM_MICROBLAZE : *isa = file->elf64 ? "MicroBlaze64" : "MicroBlaze"; break;
         case EM_V800       : *isa = "V800"; break;
         case EM_V850       : *isa = "V850"; break;
         case EM_AARCH64    : *isa = "A64"; break;
+        case EM_RISCV      : *isa = file->elf64 ? "Riscv64" : NULL; break;
         }
     }
     {
@@ -2443,7 +2461,7 @@ static void add_inlined_subroutine(ObjectInfo * o, CompUnit * unit, ContextAddre
             area.end_line = (int)call_line + 1;
         }
     }
-    object2symbol(NULL, o, &sym);
+    elf_object2symbol(NULL, o, &sym);
 #if ENABLE_SymbolsMux
     sub->func_id = tmp_strdup(symbols_mux_symbol2id(sym));
 #else
@@ -2971,7 +2989,7 @@ int get_symbol_type(const Symbol * sym, Symbol ** type) {
         *type = (Symbol *)sym;
     }
     else {
-        object2symbol(sym->ref, find_definition(obj), type);
+        elf_object2symbol(sym->ref, find_definition(obj), type);
     }
     return 0;
 }
@@ -3138,7 +3156,8 @@ int get_symbol_type_class(const Symbol * sym, int * type_class) {
             *type_class = TYPE_CLASS_FUNCTION;
             return 0;
         }
-        if (info.type == STT_NOTYPE && info.section != NULL && (info.section->flags & SHF_EXECINSTR) != 0) {
+        if (info.type == STT_NOTYPE && elf_symbol_has_address(&info) &&
+                info.section != NULL && (info.section->flags & SHF_EXECINSTR) != 0) {
             *type_class = TYPE_CLASS_FUNCTION;
             return 0;
         }
@@ -3229,6 +3248,10 @@ int get_symbol_size(const Symbol * sym, ContextAddress * size) {
     }
     if (is_constant_pseudo_symbol(sym)) return get_symbol_size(sym->base, size);
     if (is_array_type_pseudo_symbol(sym)) {
+        if (sym->base->sym_class == SYM_CLASS_FUNCTION) {
+            set_errno(ERR_OTHER, "Size of function type is not defined");
+            return -1;
+        }
         if (sym->length > 0) {
             if (get_symbol_size(sym->base, size)) return -1;
             *size *= sym->length;
@@ -3334,7 +3357,7 @@ int get_symbol_base_type(const Symbol * sym, Symbol ** base_type) {
         if (sym->base->sym_class == SYM_CLASS_FUNCTION) {
             if (sym->base->obj != NULL && sym->base->obj->mType != NULL) {
                 if (unpack(sym->base) < 0) return -1;
-                object2symbol(sym->ref, sym->base->obj->mType, base_type);
+                elf_object2symbol(sym->ref, sym->base->obj->mType, base_type);
                 return 0;
             }
             return err_no_info();
@@ -3351,7 +3374,7 @@ int get_symbol_base_type(const Symbol * sym, Symbol ** base_type) {
     if (unpack(sym) < 0) return -1;
     if (sym->sym_class == SYM_CLASS_FUNCTION) {
         if (sym->obj != NULL && sym->obj->mType != NULL) {
-            object2symbol(sym->ref, sym->obj->mType, base_type);
+            elf_object2symbol(sym->ref, sym->obj->mType, base_type);
             return 0;
         }
         return err_no_info();
@@ -3366,14 +3389,14 @@ int get_symbol_base_type(const Symbol * sym, Symbol ** base_type) {
                 i--;
             }
             if (idx != NULL && idx->mSibling != NULL) {
-                object2symbol(sym->ref, obj, base_type);
+                elf_object2symbol(sym->ref, obj, base_type);
                 (*base_type)->dimension = sym->dimension + 1;
                 return 0;
             }
         }
         obj = obj->mType;
         if (obj != NULL) {
-            object2symbol(sym->ref, find_definition(obj), base_type);
+            elf_object2symbol(sym->ref, find_definition(obj), base_type);
             (*base_type)->ref = sym->ref;
             return 0;
         }
@@ -3406,7 +3429,7 @@ int get_symbol_index_type(const Symbol * sym, Symbol ** index_type) {
                 i--;
             }
             if (idx != NULL) {
-                object2symbol(sym->ref, idx, index_type);
+                elf_object2symbol(sym->ref, idx, index_type);
                 return 0;
             }
         }
@@ -3433,7 +3456,7 @@ int get_symbol_container(const Symbol * sym, Symbol ** container) {
             if (org->mTag == TAG_ptr_to_member_type) {
                 ObjectInfo * type = get_object_ref_prop(org, AT_containing_type);
                 if (type != NULL) {
-                    object2symbol(NULL, type, container);
+                    elf_object2symbol(NULL, type, container);
                     return 0;
                 }
                 set_errno(ERR_INV_DWARF, "Invalid AT_containing_type attribute");
@@ -3442,7 +3465,7 @@ int get_symbol_container(const Symbol * sym, Symbol ** container) {
         }
         if (get_object_scope(obj, &parent) < 0) return -1;
         if (parent != NULL) {
-            object2symbol(NULL, parent, container);
+            elf_object2symbol(NULL, parent, container);
             return 0;
         }
         if (obj->mTag == TAG_compile_unit) {
@@ -3541,7 +3564,7 @@ static Symbol ** boolean_children(ObjectInfo * ref, ObjectInfo * type_obj) {
     unsigned n = 0;
     Symbol * type_sym = NULL;
     Symbol ** buf = (Symbol **)tmp_alloc(sizeof(Symbol *) * 2);
-    object2symbol(ref, type_obj, &type_sym);
+    elf_object2symbol(ref, type_obj, &type_sym);
     while (constant_pseudo_symbols[i].name != NULL) {
         if (n < 2 && strcmp(constant_pseudo_symbols[i].type, "bool") == 0) {
             Symbol * sym = alloc_symbol();
@@ -3581,7 +3604,7 @@ int get_symbol_children(const Symbol * sym, Symbol *** children, int * count) {
                     if (i->mTag == TAG_formal_parameter || i->mTag == TAG_unspecified_parameters) {
                         Symbol * x = NULL;
                         Symbol * y = NULL;
-                        object2symbol(sym->ref, i, &x);
+                        elf_object2symbol(sym->ref, i, &x);
                         if (get_symbol_type(x, &y) < 0) return -1;
                         if (y == NULL && i->mTag == TAG_unspecified_parameters) {
                             y = alloc_symbol();
@@ -3640,7 +3663,7 @@ int get_symbol_children(const Symbol * sym, Symbol *** children, int * count) {
             ObjectInfo * i = get_dwarf_children(find_definition(obj));
             while (i != NULL) {
                 Symbol * x = NULL;
-                object2symbol(sym->ref, find_definition(i), &x);
+                elf_object2symbol(sym->ref, find_definition(i), &x);
                 if (buf_len <= n) {
                     buf_len += 16;
                     buf = (Symbol **)tmp_realloc(buf, sizeof(Symbol *) * buf_len);
@@ -4015,6 +4038,12 @@ int get_location_info(const Symbol * sym, LocationInfo ** res) {
                 return -1;
             }
         }
+        if (obj->mTag == TAG_label && (obj->mFlags & DOIF_ranges) == 0 && (obj->mFlags & DOIF_low_pc) != 0) {
+            ContextAddress addr = elf_map_to_run_time_address(sym_ctx, obj->mCompUnit->mFile, obj->u.mCode.mSection, obj->u.mCode.mLowPC);
+            if (errno) return -1;
+            add_location_command(info, SFT_CMD_NUMBER)->args.num = addr;
+            return 0;
+        }
 #if 0
 #if SERVICE_StackTrace || ENABLE_ContextProxy
         if (obj->mTag == TAG_formal_parameter) {
@@ -4144,17 +4173,7 @@ int get_location_info(const Symbol * sym, LocationInfo ** res) {
                 return -1;
             }
         }
-        switch (elf_sym_info.type) {
-        case STT_NOTYPE:
-            /* Check if the NOTYPE symbol is for a section allocated in memory */
-            if ((elf_sym_info.section == NULL ||
-                (elf_sym_info.section->flags & SHF_ALLOC) == 0)
-               && elf_sym_info.section_index != SHN_ABS) break;
-
-            /* fall through */
-        case STT_OBJECT:
-        case STT_FUNC:
-        case STT_GNU_IFUNC:
+        if (elf_symbol_has_address(&elf_sym_info)) {
             if (elf_symbol_address(sym_ctx, &elf_sym_info, &address)) return -1;
             add_location_command(info, SFT_CMD_NUMBER)->args.num = address;
             return 0;
@@ -4298,17 +4317,44 @@ int get_symbol_flags(const Symbol * sym, SYM_FLAGS * flags) {
     return 0;
 }
 
-int get_symbol_props(const Symbol * sym, SymbolProperties * props) {
-#define STO_PPC64_LOCAL_BIT 5
-#define STO_PPC64_LOCAL_MASK    (7 << STO_PPC64_LOCAL_BIT)
+static void get_local_entry_offset(const Symbol * sym, SymbolProperties * props) {
+    ELF_SymbolInfo elf_sym_info;
+
+#ifndef STO_PPC64_LOCAL_MASK
+#  define STO_PPC64_LOCAL_BIT 5
+#  define STO_PPC64_LOCAL_MASK    (7 << STO_PPC64_LOCAL_BIT)
+#endif
 #define IS_PPC64_V2(elfsym) ((elfsym->file->machine == EM_PPC64) && (elfsym->file->flags & 0x3) == 2)
 
-    ELF_SymbolInfo elf_sym_info;
+    /* PowerPC64 ABIv2 computes local offset from st_other */
+    if (sym->tbl != NULL) {
+        /* Only do that on PPC64 v2 */
+        if (!IS_PPC64_V2(sym->tbl)) return;
+        unpack_elf_symbol_info(sym->tbl, sym->index, &elf_sym_info);
+    }
+    else {
+        Symbol * elf_symbol = NULL;
+        /* From Dwarf object to Elf symbol */
+        map_to_sym_table(sym->obj, &elf_symbol);
+        if (elf_symbol == NULL) return;
+        if (!IS_PPC64_V2(elf_symbol->tbl)) return;
+        unpack_elf_symbol_info(elf_symbol->tbl, elf_symbol->index, &elf_sym_info);
+    }
+    /* We can compute the offset now */
+    props->local_entry_offset = (((1 << (((elf_sym_info.other) & STO_PPC64_LOCAL_MASK) >> STO_PPC64_LOCAL_BIT)) >> 2) << 2);
+}
+
+int get_symbol_props(const Symbol * sym, SymbolProperties * props) {
     ObjectInfo * obj = sym->obj;
+    Trap trap;
+
     assert(sym->magic == SYMBOL_MAGIC);
     memset(props, 0, sizeof(SymbolProperties));
     if (sym->base || is_std_type_pseudo_symbol(sym)) return 0;
     if (unpack(sym) < 0) return -1;
+
+    if (!set_trap(&trap)) return -1;
+
     if (obj != NULL) {
         U8_T n = 0;
         if (obj->mTag == TAG_base_type) {
@@ -4320,22 +4366,16 @@ int get_symbol_props(const Symbol * sym, SymbolProperties * props) {
         }
     }
 
-    /* PowerPC64 ABIv2 computes local offset from st_other */
-    if (sym->tbl != NULL) {
-        /* Only do that on PPC64 v2 */
-        if (!IS_PPC64_V2(sym->tbl)) return 0;
-        unpack_elf_symbol_info(sym->tbl, sym->index, &elf_sym_info);
+    get_local_entry_offset(sym, props);
+
+    if (obj != NULL) {
+        const char * linkage_name = get_linkage_name(obj);
+        if (linkage_name != NULL && linkage_name != obj->mName) {
+            props->linkage_name = linkage_name;
+        }
     }
-    else {
-        Symbol * elf_symbol = NULL;
-        /* From Dwarf object to Elf symbol */
-        map_to_sym_table(sym->obj, &elf_symbol);
-        if (elf_symbol == NULL) return 0;
-        if (!IS_PPC64_V2(elf_symbol->tbl)) return 0;
-        unpack_elf_symbol_info(elf_symbol->tbl, elf_symbol->index, &elf_sym_info);
-    }
-    /* We can compute the offset now */
-    props->local_entry_offset = (((1 << (((elf_sym_info.other) & STO_PPC64_LOCAL_MASK) >> STO_PPC64_LOCAL_BIT)) >> 2) << 2);
+
+    clear_trap(&trap);
     return 0;
 }
 

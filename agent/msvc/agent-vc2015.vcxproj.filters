@@ -64,6 +64,15 @@
     <Filter Include="machine\powerpc">
       <UniqueIdentifier>{ff538629-61f5-41bb-907c-975bcb6161f1}</UniqueIdentifier>
     </Filter>
+    <Filter Include="machine\microblaze64">
+      <UniqueIdentifier>{4e8ce030-4562-4d31-8bf8-3f970be0c354}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="http">
+      <UniqueIdentifier>{7deca403-7ce9-46a2-aa22-cf65f19024d3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="machine\riscv64">
+      <UniqueIdentifier>{33878318-fdc6-4e2e-9642-182293971a42}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\tcf\framework\asyncreq.c">
@@ -148,6 +157,9 @@
       <Filter>services</Filter>
     </ClCompile>
     <ClCompile Include="..\tcf\services\contextquery.c">
+      <Filter>services</Filter>
+    </ClCompile>
+    <ClCompile Include="..\tcf\services\contextreset.c">
       <Filter>services</Filter>
     </ClCompile>
     <ClCompile Include="..\tcf\services\diagnostics.c">
@@ -381,6 +393,27 @@
     <ClCompile Include="..\tcf\framework\channel_lws.c">
       <Filter>framework</Filter>
     </ClCompile>
+    <ClCompile Include="..\machine\microblaze\tcf\cpudefs-mdep.c">
+      <Filter>machine\microblaze</Filter>
+    </ClCompile>
+    <ClCompile Include="..\machine\microblaze\tcf\stack-crawl-microblaze.c">
+      <Filter>machine\microblaze</Filter>
+    </ClCompile>
+    <ClCompile Include="..\machine\microblaze\tcf\disassembler-microblaze.c">
+      <Filter>machine\microblaze</Filter>
+    </ClCompile>
+    <ClCompile Include="..\tcf\http\http.c">
+      <Filter>http</Filter>
+    </ClCompile>
+    <ClCompile Include="..\tcf\http\http-tcf.c">
+      <Filter>http</Filter>
+    </ClCompile>
+    <ClCompile Include="..\tcf\framework\compression.c">
+      <Filter>framework</Filter>
+    </ClCompile>
+    <ClCompile Include="..\machine\riscv64\tcf\cpudefs-mdep.c">
+      <Filter>machine\riscv64</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\tcf\framework\asyncreq.h">
@@ -483,6 +516,9 @@
       <Filter>services</Filter>
     </ClInclude>
     <ClInclude Include="..\tcf\services\contextquery.h">
+      <Filter>services</Filter>
+    </ClInclude>
+    <ClInclude Include="..\tcf\services\contextreset.h">
       <Filter>services</Filter>
     </ClInclude>
     <ClInclude Include="..\tcf\services\diagnostics.h">
@@ -812,6 +848,45 @@
     </ClInclude>
     <ClInclude Include="..\machine\x86_64\tcf\cpu-regs-gdb.h">
       <Filter>machine\x86_64</Filter>
+    </ClInclude>
+    <ClInclude Include="..\tcf\framework\mdep-ptrace.h">
+      <Filter>framework</Filter>
+    </ClInclude>
+    <ClInclude Include="..\machine\microblaze\tcf\cpudefs-mdep.h">
+      <Filter>machine\microblaze</Filter>
+    </ClInclude>
+    <ClInclude Include="..\machine\microblaze\tcf\regset-mdep.h">
+      <Filter>machine\microblaze</Filter>
+    </ClInclude>
+    <ClInclude Include="..\machine\microblaze\tcf\stack-crawl-microblaze.h">
+      <Filter>machine\microblaze</Filter>
+    </ClInclude>
+    <ClInclude Include="..\machine\microblaze\tcf\disassembler-microblaze.h">
+      <Filter>machine\microblaze</Filter>
+    </ClInclude>
+    <ClInclude Include="..\machine\microblaze64\tcf\cpu-regs-gdb.h">
+      <Filter>machine\microblaze64</Filter>
+    </ClInclude>
+    <ClInclude Include="..\tcf\http\http.h">
+      <Filter>http</Filter>
+    </ClInclude>
+    <ClInclude Include="..\tcf\http\http-tcf.h">
+      <Filter>http</Filter>
+    </ClInclude>
+    <ClInclude Include="..\tcf\framework\config.h">
+      <Filter>framework</Filter>
+    </ClInclude>
+    <ClInclude Include="..\tcf\framework\compression.h">
+      <Filter>framework</Filter>
+    </ClInclude>
+    <ClInclude Include="..\machine\riscv64\tcf\cpudefs-mdep.h">
+      <Filter>machine\riscv64</Filter>
+    </ClInclude>
+    <ClInclude Include="..\machine\riscv64\tcf\dwarfreloc-mdep.h">
+      <Filter>machine\riscv64</Filter>
+    </ClInclude>
+    <ClInclude Include="..\machine\riscv64\tcf\regset-mdep.h">
+      <Filter>machine\riscv64</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2014 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2019 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -16,10 +16,6 @@
 /*
  * Target service implementation: file system access (TCF name FileSystem)
  */
-
-#if defined(__GNUC__) && !defined(_GNU_SOURCE)
-#  define _GNU_SOURCE
-#endif
 
 #include <tcf/config.h>
 
@@ -50,7 +46,6 @@
 #include <tcf/framework/trace.h>
 #include <tcf/framework/json.h>
 #include <tcf/framework/exceptions.h>
-#include <tcf/framework/protocol.h>
 #include <tcf/services/filesystem.h>
 
 #define BUF_SIZE (128 * MEM_USAGE_FACTOR)
@@ -217,7 +212,7 @@ static void channel_close_listener(Channel * c) {
         OpenFileInfo * h = ring2file(list_next);
         if (h->inp == &c->inp) {
             int posted = 0;
-            trace(LOG_ALWAYS, "file handle left open by client: FS%d", h->handle);
+            trace(LOG_ALWAYS, "file handle left open by client: FS%lu", h->handle);
             list_remove(&h->link_hash);
             while (!list_is_empty(&h->link_reqs)) {
                 LINK * link = h->link_reqs.next;
@@ -612,7 +607,7 @@ static void write_file_attrs(OutputStream * out, FileAttrs * attrs) {
 }
 
 static int to_local_open_flags(int flags) {
-    int res = O_BINARY | O_LARGEFILE;
+    int res = O_BINARY;
     if ((flags & TCF_O_READ) && (flags & TCF_O_WRITE)) res |= O_RDWR;
     else if (flags & TCF_O_READ) res |= O_RDONLY;
     else if (flags & TCF_O_WRITE) res |= O_WRONLY;
@@ -685,14 +680,14 @@ static IORequest * create_io_request(char * token, OpenFileInfo * handle, int ty
 
 static void command_open(char * token, Channel * c) {
     char path[FILE_PATH_SIZE];
-    unsigned int flags;
+    unsigned flags;
     FileAttrs attrs;
     OpenFileInfo * handle = NULL;
     IORequest * req = NULL;
 
     read_path(&c->inp, path, sizeof(path));
     json_test_char(&c->inp, MARKER_EOA);
-    flags = (unsigned int) json_read_ulong(&c->inp);
+    flags = (unsigned)json_read_ulong(&c->inp);
     json_test_char(&c->inp, MARKER_EOA);
     memset(&attrs, 0, sizeof(FileAttrs));
 #if defined(_WIN32) || defined(__CYGWIN__)
@@ -1358,9 +1353,6 @@ static void command_mkdir(char * token, Channel * c) {
     char path[FILE_PATH_SIZE];
     FileAttrs attrs;
     int err = 0;
-#if !defined(_WRS_KERNEL)
-    int mode;
-#endif
 
     read_path(&c->inp, path, sizeof(path));
     json_test_char(&c->inp, MARKER_EOA);
@@ -1372,11 +1364,15 @@ static void command_mkdir(char * token, Channel * c) {
     json_test_char(&c->inp, MARKER_EOA);
     json_test_char(&c->inp, MARKER_EOM);
 
-#if defined(_WRS_KERNEL)
+#if defined(_WRS_KERNEL) && !defined(_WRS_CONFIG_CORE__POSIX_MKDIR)
     if (mkdir(path) < 0) err = errno;
 #else
-    mode = (attrs.flags & ATTR_PERMISSIONS) ? attrs.permissions : 0777;
-    if (mkdir(path, mode) < 0) err = errno;
+    if (attrs.flags & ATTR_PERMISSIONS) {
+        if (mkdir(path, attrs.permissions) < 0) err = errno;
+    }
+    else {
+        if (mkdir(path, 0777) < 0) err = errno;
+    }
 #endif
 #if defined(_WIN32) || defined(__CYGWIN__)
     if (attrs.win32_attrs != INVALID_FILE_ATTRIBUTES) {

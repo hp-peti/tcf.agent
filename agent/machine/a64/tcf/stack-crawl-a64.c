@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2014, 2017 Xilinx, Inc. and others.
+ * Copyright (c) 2014-2018 Xilinx, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -22,12 +22,9 @@
 #if ENABLE_DebugContext
 
 #include <assert.h>
-#include <tcf/framework/errors.h>
-#include <tcf/framework/cpudefs.h>
 #include <tcf/framework/context.h>
 #include <tcf/framework/myalloc.h>
 #include <tcf/framework/trace.h>
-#include <tcf/services/stacktrace.h>
 #include <machine/a64/tcf/stack-crawl-a64.h>
 
 #define MAX_INST 200
@@ -65,10 +62,18 @@ typedef struct {
     MemData mem_data;
 } BranchData;
 
+typedef struct {
+    RegData vbar;
+    RegData spsr;
+    RegData elr;
+    RegData sp;
+} ELData;
+
 static Context * stk_ctx = NULL;
 static StackFrame * stk_frame = NULL;
 static RegData reg_data[REG_DATA_SIZE];
 static RegData cpsr_data;
+static ELData el_data[4];
 static RegData pc_data;
 static MemData mem_data;
 static unsigned mem_cache_idx = 0;
@@ -121,6 +126,7 @@ static int read_byte(uint64_t addr, uint8_t * bt) {
         }
         c->size = info.size_valid;
 #else
+        c->size = 0;
         return -1;
 #endif
     }
@@ -204,18 +210,18 @@ static int mem_hash_read(uint64_t addr, uint64_t * data, int * valid) {
     return -1;
 }
 
-static int load_reg(uint64_t addr, int r) {
+static int load_reg(uint64_t addr, RegData * r) {
     int valid = 0;
 
     /* Check if the value can be found in the hash */
-    if (mem_hash_read(addr, &reg_data[r].v, &valid) == 0) {
-        reg_data[r].o = valid ? REG_VAL_OTHER : 0;
+    if (mem_hash_read(addr, &r->v, &valid) == 0) {
+        r->o = valid ? REG_VAL_OTHER : 0;
     }
     else {
         /* Not in the hash, so read from real memory */
-        reg_data[r].o = 0;
-        if (read_u64(addr, &reg_data[r].v) < 0) return -1;
-        reg_data[r].o = REG_VAL_OTHER;
+        r->o = 0;
+        if (read_u64(addr, &r->v) < 0) return -1;
+        r->o = REG_VAL_OTHER;
     }
     return 0;
 }
@@ -236,18 +242,24 @@ static int load_reg_lazy(uint64_t addr, int r) {
     return 0;
 }
 
-static int chk_loaded(int r) {
-    if (reg_data[r].o == 0) return 0;
-    if (reg_data[r].o == REG_VAL_OTHER) return 0;
-    if (reg_data[r].o == REG_VAL_FRAME) {
-        uint64_t v = 0;
-        RegisterDefinition * def = get_reg_definitions(stk_ctx) + reg_data[r].v;
-        if (read_reg_value(stk_frame, def, &v) < 0) return -1;
-        reg_data[r].v = v;
-        reg_data[r].o = REG_VAL_OTHER;
+static int chk_reg_loaded(RegData * r) {
+    if (r->o == 0) return 0;
+    if (r->o == REG_VAL_OTHER) return 0;
+    if (r->o == REG_VAL_FRAME) {
+        RegisterDefinition * def = get_reg_definitions(stk_ctx) + r->v;
+        if (read_reg_value(stk_frame, def, &r->v) < 0) {
+            if (stk_frame->is_top_frame) return -1;
+            r->o = 0;
+            return 0;
+        }
+        r->o = REG_VAL_OTHER;
         return 0;
     }
-    return load_reg(reg_data[r].v, r);
+    return load_reg(r->v, r);
+}
+
+static int chk_loaded(int r) {
+    return chk_reg_loaded(reg_data + r);
 }
 
 static int mem_hash_write(uint64_t addr, uint64_t value, int valid) {
@@ -264,7 +276,7 @@ static int mem_hash_write(uint64_t addr, uint64_t value, int valid) {
         if (reg_data[i].o != REG_VAL_ADDR && reg_data[i].o != REG_VAL_STACK) continue;
         if (reg_data[i].v >= addr + 8) continue;
         if (reg_data[i].v + 8 <= addr) continue;
-        if (load_reg(reg_data[i].v, i) < 0) return -1;
+        if (load_reg(reg_data[i].v, reg_data + i) < 0) return -1;
     }
 
     /* Store the item */
@@ -1007,7 +1019,7 @@ static int trace_a64(void) {
         unsigned i;
         /* Unknown/undecoded. May alter some register, so invalidate file */
         for (i = 0; i < 30; i++) reg_data[i].o = 0;
-        trace(LOG_STACK, "Stack crawl: unknown ARM A64 instruction %08x", instr);
+        trace(LOG_STACK, "Stack crawl: unknown ARM A64 instruction %08" PRIx32, instr);
     }
 
     if (!trace_return && !trace_branch) {
@@ -1026,7 +1038,7 @@ static int trace_instructions(void) {
         unsigned t = 0;
         BranchData * b = NULL;
         if (chk_loaded(REG_ID_SP) < 0) return -1;
-        trace(LOG_STACK, "Stack crawl: pc 0x%" PRIX64 ", sp 0x%" PRIX64,
+        trace(LOG_STACK, "Stack crawl: pc %#" PRIx64 ", sp %#" PRIx64,
             pc_data.o ? pc_data.v : (uint64_t)0,
             reg_data[REG_ID_SP].o ? reg_data[REG_ID_SP].v : (uint64_t)0);
         for (t = 0; t < MAX_INST; t++) {
@@ -1066,6 +1078,7 @@ static int trace_instructions(void) {
     cpsr_data.o = 0;
     pc_data.o = 0;
     if (org_pc.o) {
+        if (chk_reg_loaded(&org_pc) < 0) return -1;
         if (stk_frame->frame == 0) {
             if (read_u32(org_pc.v, &instr) == 0) {
                 if ((instr & 0xffe07fff) == 0xa9a07bfd) {
@@ -1085,11 +1098,15 @@ static int trace_instructions(void) {
                 /* Prologue, prev instruction: stp x29,x30,[sp, #-xxx]! */
                 uint32_t imm = (instr >> 15) & 0x7f;
                 memcpy(reg_data, org_regs, sizeof(org_regs));
-                reg_data[REG_ID_SP].v += (0x80 - imm) << 3;
+                if (reg_data[REG_ID_SP].o) {
+                    if (chk_loaded(REG_ID_SP) < 0) return -1;
+                    reg_data[REG_ID_SP].v += (0x80 - imm) << 3;
+                }
                 pc_data = org_regs[REG_ID_LR];
                 return 0;
             }
         }
+        if (chk_reg_loaded(org_regs + REG_ID_FP) < 0) return -1;
         if (org_regs[REG_ID_FP].o && org_regs[REG_ID_FP].v != 0) {
             /* Retrieve chained fp and return address.
              * See page 16 & 30 of the following document:
@@ -1103,8 +1120,23 @@ static int trace_instructions(void) {
             }
         }
     }
-    if (pc_data.o == 0 && org_regs[REG_ID_SP].v != 0 && org_regs[REG_ID_LR].v != 0 && org_pc.v != org_regs[REG_ID_LR].v) {
-        pc_data = org_regs[REG_ID_LR];
+    if (pc_data.o == 0) {
+        if (chk_reg_loaded(&org_pc) < 0) return -1;
+        if (chk_reg_loaded(org_regs + REG_ID_LR) < 0) return -1;
+        if (chk_reg_loaded(org_regs + REG_ID_SP) < 0) return -1;
+        if (org_regs[REG_ID_SP].v != 0 && org_regs[REG_ID_LR].v != 0 && org_pc.v != org_regs[REG_ID_LR].v) {
+            pc_data = org_regs[REG_ID_LR];
+        }
+    }
+    return 0;
+}
+
+static int is_el_reg(RegisterDefinition * def, const char * name, unsigned * el) {
+    unsigned l = strlen(name);
+    if (strncmp(def->name, name, l) == 0 && strncmp(def->name + l, "_el", 3) == 0 &&
+        def->name[l + 3] >= '0' && def->name[l + 3] <= '3' && def->name[l + 4] == 0) {
+        *el = def->name[l + 3] - '0';
+        return 1;
     }
     return 0;
 }
@@ -1112,6 +1144,7 @@ static int trace_instructions(void) {
 int crawl_stack_frame_a64(StackFrame * frame, StackFrame * down) {
     RegisterDefinition * defs = get_reg_definitions(frame->ctx);
     RegisterDefinition * def = NULL;
+    int interrupt_handler = 0;
     unsigned i;
 
     stk_ctx = frame->ctx;
@@ -1120,17 +1153,20 @@ int crawl_stack_frame_a64(StackFrame * frame, StackFrame * down) {
     memset(&reg_data, 0, sizeof(reg_data));
     memset(&cpsr_data, 0, sizeof(cpsr_data));
     memset(&pc_data, 0, sizeof(pc_data));
+    memset(&el_data, 0, sizeof(el_data));
     branch_pos = 0;
     branch_cnt = 0;
 
     for (i = 0; i < MEM_CACHE_SIZE; i++) mem_cache[i].size = 0;
 
     for (def = defs; def->name; def++) {
-        if (def->dwarf_id == 31) {
-            if (read_reg_value(frame, def, &reg_data[def->dwarf_id].v) < 0) continue;
-            reg_data[def->dwarf_id].o = REG_VAL_OTHER;
+        unsigned el = 0;
+        if (def->dwarf_id == REG_ID_SP) {
+            if (read_reg_value(frame, def, &reg_data[REG_ID_SP].v) < 0) continue;
+            if (reg_data[REG_ID_SP].v == 0) return 0;
+            reg_data[REG_ID_SP].o = REG_VAL_OTHER;
         }
-        else if (def->dwarf_id >= 0 && def->dwarf_id <= 31) {
+        else if (def->dwarf_id >= 0 && def->dwarf_id < REG_DATA_SIZE) {
             reg_data[def->dwarf_id].v = (uint32_t)(def - defs);
             reg_data[def->dwarf_id].o = REG_VAL_FRAME;
         }
@@ -1142,15 +1178,53 @@ int crawl_stack_frame_a64(StackFrame * frame, StackFrame * down) {
             if (read_reg_value(frame, def, &pc_data.v) < 0) continue;
             pc_data.o = REG_VAL_OTHER;
         }
+        else if (is_el_reg(def, "vbar", &el)) {
+            RegData * r = &el_data[el].vbar;
+            if (read_reg_value(frame, def, &r->v) < 0) continue;
+            r->o = REG_VAL_OTHER;
+        }
+        else if (is_el_reg(def, "spsr", &el)) {
+            RegData * r = &el_data[el].spsr;
+            if (read_reg_value(frame, def, &r->v) < 0) continue;
+            r->o = REG_VAL_OTHER;
+        }
+        else if (is_el_reg(def, "elr", &el)) {
+            RegData * r = &el_data[el].elr;
+            if (read_reg_value(frame, def, &r->v) < 0) continue;
+            r->o = REG_VAL_OTHER;
+        }
+        else if (is_el_reg(def, "sp", &el)) {
+            RegData * r = &el_data[el].sp;
+            if (read_reg_value(frame, def, &r->v) < 0) continue;
+            r->o = REG_VAL_OTHER;
+        }
     }
 
-    if (trace_instructions() < 0) return -1;
+    if (frame->is_top_frame && cpsr_data.o && pc_data.o) {
+        unsigned el = (cpsr_data.v & 0x0c) >> 2;
+        if (el_data[el].vbar.o && el_data[el].vbar.v == (pc_data.v & ~(uint64_t)0x780)) {
+            /* Special case: first instruction of interrupt handler */
+            pc_data = el_data[el].elr;
+            cpsr_data = el_data[el].spsr;
+            if (reg_data[REG_ID_SP].o) {
+                frame->fp = (ContextAddress)reg_data[REG_ID_SP].v;
+                reg_data[REG_ID_SP].o = 0;
+            }
+            if (cpsr_data.o) {
+                el = (cpsr_data.v & 0x0c) >> 2;
+                reg_data[REG_ID_SP] = el_data[(cpsr_data.v & 1) ? el : 0].sp;
+            }
+            interrupt_handler = 1;
+        }
+    }
+
+    if (!interrupt_handler && trace_instructions() < 0) return -1;
 
     for (def = defs; def->name; def++) {
-        if (def->dwarf_id >= 0 && def->dwarf_id <= 31) {
+        if (def->dwarf_id >= 0 && def->dwarf_id < REG_DATA_SIZE) {
             int r = def->dwarf_id;
 #if ENABLE_StackRegisterLocations
-            if (r < 31 && (reg_data[r].o == REG_VAL_ADDR || reg_data[r].o == REG_VAL_STACK)) {
+            if (r != REG_ID_SP && (reg_data[r].o == REG_VAL_ADDR || reg_data[r].o == REG_VAL_STACK)) {
                 int valid = 0;
                 uint64_t data = 0;
                 uint64_t addr = reg_data[r].v;
@@ -1169,17 +1243,28 @@ int crawl_stack_frame_a64(StackFrame * frame, StackFrame * down) {
                     continue;
                 }
             }
+            else if (r != REG_ID_SP && reg_data[r].o == REG_VAL_FRAME) {
+                LocationExpressionCommand * cmds = (LocationExpressionCommand *)tmp_alloc_zero(sizeof(LocationExpressionCommand));
+                cmds[0].cmd = SFT_CMD_RD_REG;
+                cmds[0].args.reg = defs + reg_data[r].v;
+                if (write_reg_location(down, def, cmds, 1) == 0) {
+                    down->has_reg_data = 1;
+                    continue;
+                }
+            }
 #endif
             if (chk_loaded(r) < 0) continue;
             if (!reg_data[r].o) continue;
-            if (r == 31) frame->fp = (ContextAddress)reg_data[r].v;
+            if (r == REG_ID_SP && !interrupt_handler) frame->fp = (ContextAddress)reg_data[r].v;
             if (write_reg_value(down, def, reg_data[r].v) < 0) return -1;
         }
         else if (strcmp(def->name, "cpsr") == 0) {
+            if (chk_reg_loaded(&cpsr_data) < 0) continue;
             if (!cpsr_data.o) continue;
             if (write_reg_value(down, def, cpsr_data.v) < 0) return -1;
         }
         else if (strcmp(def->name, "pc") == 0) {
+            if (chk_reg_loaded(&pc_data) < 0) continue;
             if (!pc_data.o) continue;
             if (write_reg_value(down, def, pc_data.v) < 0) return -1;
         }

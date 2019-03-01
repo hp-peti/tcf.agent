@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2016 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007, 2017 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -218,10 +218,12 @@ void notify_channel_opened(Channel * c) {
     assert(c->state == ChannelStateConnected);
     if (c->notified_open) return;
     c->notified_open = 1;
+    channel_lock(c);
     for (i = 0; i < open_listeners_cnt; i++) {
         open_listeners[i](c);
     }
     notify_client_connected(&c->client);
+    channel_unlock(c);
 }
 
 void notify_channel_closed(Channel * c) {
@@ -229,10 +231,12 @@ void notify_channel_closed(Channel * c) {
     assert(c->state != ChannelStateConnected);
     if (!c->notified_open) return;
     c->notified_open = 0;
+    channel_lock(c);
     notify_client_disconnected(&c->client);
     for (i = 0; i < close_listeners_cnt; i++) {
         close_listeners[i](c);
     }
+    channel_unlock(c);
 }
 
 TCFBroadcastGroup * broadcast_group_alloc(void) {
@@ -245,12 +249,14 @@ TCFBroadcastGroup * broadcast_group_alloc(void) {
     p->out.splice_block = splice_block_all;
     p->out.cur = p->buf;
     p->out.end = p->buf + sizeof(p->buf);
+    p->ref_count = 1;
     return p;
 }
 
-void broadcast_group_free(TCFBroadcastGroup * p) {
+static void broadcast_group_dispose(TCFBroadcastGroup * p) {
     LINK * l = p->channels.next;
 
+    assert(p->ref_count == 0);
     assert(is_dispatch_thread());
     while (l != &p->channels) {
         Channel * c = bclink2channel(l);
@@ -262,6 +268,20 @@ void broadcast_group_free(TCFBroadcastGroup * p) {
     assert(list_is_empty(&p->channels));
     p->magic = 0;
     loc_free(p);
+}
+
+void broadcast_group_lock(TCFBroadcastGroup * p) {
+    assert(p->ref_count > 0);
+    assert(is_dispatch_thread());
+    p->ref_count++;
+}
+
+void broadcast_group_unlock(TCFBroadcastGroup * p) {
+    assert(p->ref_count > 0);
+    assert(is_dispatch_thread());
+    if (--(p->ref_count) == 0) {
+        broadcast_group_dispose(p);
+    }
 }
 
 void channel_set_broadcast_group(Channel * c, TCFBroadcastGroup * bcg) {
@@ -380,7 +400,8 @@ void channel_unlock_with_msg(Channel * c, const char * msg) {
 }
 
 int is_channel_closed(Channel * c) {
-    return c->is_closed(c);
+    if (c->is_closed) return c->is_closed(c);
+    return c->state == ChannelStateDisconnected;
 }
 
 PeerServer * channel_peer_from_url(const char * url) {
@@ -569,7 +590,7 @@ void add_channel_transport(const char * transportname, ChannelServerCreate creat
  * Start communication of a newly created channel
  */
 void channel_start(Channel * c) {
-    trace(LOG_PROTOCOL, "Starting channel %#lx %s", c, c->peer_name);
+    trace(LOG_PROTOCOL, "Starting channel %#" PRIxPTR " %s", (uintptr_t)c, c->peer_name);
     assert(c->protocol != NULL);
     assert(c->state == ChannelStateStartWait);
     c->state = ChannelStateStarted;
@@ -580,6 +601,6 @@ void channel_start(Channel * c) {
  * Close communication channel
  */
 void channel_close(Channel * c) {
-    trace(LOG_PROTOCOL, "Closing channel %#lx %s", c, c->peer_name);
+    trace(LOG_PROTOCOL, "Closing channel %#" PRIxPTR " %s", (uintptr_t)c, c->peer_name);
     c->close(c, 0);
 }

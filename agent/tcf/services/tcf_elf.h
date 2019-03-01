@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2015 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2019 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -28,6 +28,10 @@
 #  include <elf.h>
 #endif
 #include <tcf/framework/context.h>
+
+#ifndef EM_RISCV
+#  define EM_RISCV      243 /* RISC-V */
+#endif
 
 #if !defined(INCLUDE_NATIVE_ELF_H)
 
@@ -80,7 +84,7 @@
 #define EM_X86_64      62 /* AMD x86-64 architecture */
 #define EM_V850        87 /* NEC/Renesas RH850 */
 #define EM_AARCH64    183 /* ARM 64-bit architecture */
-#define EM_MICROBLAZE 189
+#define EM_MICROBLAZE 189 /* Xilinx MicroBlaze */
 
 #define ET_NONE         0
 #define ET_REL          1
@@ -125,7 +129,6 @@
 #define STT_LOPROC      13
 #define STT_HIPROC      15
 #define STT_ARM_TFUNC   STT_LOPROC
-
 
 #define PT_NULL         0
 #define PT_LOAD         1
@@ -505,6 +508,11 @@ struct ELF_Section {
     U4_T link;
     U4_T info;
     U4_T entsize;
+
+    /* Compression info */
+    U4_T compressed_type;
+    U8_T compressed_size;
+    U8_T compressed_offset;
 
     void * mmap_addr;
     size_t mmap_size;

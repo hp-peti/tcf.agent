@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2016 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2018 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -47,7 +47,6 @@
 #include <tcf/framework/mdep-fs.h>
 #include <tcf/framework/mdep-inet.h>
 #include <tcf/framework/tcf.h>
-#include <tcf/framework/channel.h>
 #include <tcf/framework/channel_tcp.h>
 #include <tcf/framework/myalloc.h>
 #include <tcf/framework/protocol.h>
@@ -155,10 +154,33 @@ static void tcp_channel_read_done(void * x);
 static void handle_channel_msg(void * x);
 
 #if ENABLE_SSL
+#ifndef OPENSSL_VERSION_NUMBER
+#  define OPENSSL_VERSION_NUMBER 0x00000000
+#endif
+
+#if OPENSSL_VERSION_NUMBER < 0x10100000
+void DH_get0_pqg(const DH * dh, const BIGNUM ** p, const BIGNUM ** q, const BIGNUM ** g) {
+    if (p != NULL) *p = dh->p;
+    if (q != NULL) *q = dh->q;
+    if (g != NULL) *g = dh->g;
+}
+int DH_set0_pqg(DH * dh, BIGNUM * p, BIGNUM * q, BIGNUM * g) {
+    /* q is optional */
+    if (p == NULL || g == NULL) return 0;
+    if (q != NULL) dh->length = BN_num_bits(q);
+    BN_free(dh->p);
+    BN_free(dh->q);
+    BN_free(dh->g);
+    dh->p = p;
+    dh->q = q;
+    dh->g = g;
+    return 1;
+}
+#endif
+
 static const char * issuer_name = "TCF";
 static const char * tcf_dir = "/etc/tcf";
 static SSL_CTX * ssl_ctx = NULL;
-static X509 * ssl_cert = NULL;
 static RSA * rsa_key = NULL;
 
 static void ini_ssl(void) {
@@ -221,10 +243,49 @@ static int certificate_verify_callback(int preverify_ok, X509_STORE_CTX * ctx) {
     else if (!found) trace(LOG_ALWAYS, "Authentication failure: invalid certificate");
     return err == 0 && found;
 }
+
+/* Created by: openssl dhparam -5 -C 1024 */
+/* Note: Java prior to 1.7 does not support Diffie-Hellman parameters longer than 1024 bits */
+/* Note: Bug in  OpenSSL 1.0.2: If generator is not 2 or 5, dh->g=generator is not a usable generator */
+static DH * get_dh1024(void) {
+    static unsigned char dhp_1024[] = {
+        0xD0, 0x8E, 0x12, 0x70, 0x45, 0x22, 0x7D, 0x83, 0x06, 0xB5,
+        0x49, 0xD8, 0x86, 0x34, 0x3A, 0x8E, 0x1D, 0xE9, 0x6C, 0x84,
+        0x3A, 0x83, 0x2E, 0x0E, 0xD0, 0x7B, 0x5F, 0x69, 0x65, 0xFD,
+        0xD4, 0x0A, 0x97, 0x6A, 0x1A, 0xF6, 0xB2, 0xCD, 0xB4, 0x33,
+        0x81, 0x9C, 0xC0, 0x45, 0x52, 0x73, 0xA5, 0xEC, 0x32, 0x9D,
+        0xAE, 0x90, 0x73, 0x24, 0x53, 0x28, 0x2E, 0x35, 0x22, 0xBC,
+        0xD7, 0x43, 0xCA, 0x3E, 0xD4, 0x32, 0x75, 0xB6, 0xBD, 0xD4,
+        0x8E, 0x58, 0x7B, 0x1F, 0x61, 0xCF, 0x62, 0x34, 0x95, 0xA0,
+        0x36, 0x78, 0x98, 0xEB, 0xD0, 0x2A, 0xDC, 0x31, 0x56, 0x02,
+        0x3E, 0xAB, 0x5D, 0x36, 0x65, 0x57, 0x24, 0x79, 0x27, 0x6F,
+        0xCE, 0x65, 0x29, 0xC3, 0x97, 0xFC, 0x39, 0x31, 0x3B, 0x9E,
+        0x7F, 0xA8, 0xEA, 0x68, 0x2E, 0x19, 0x06, 0x26, 0x3F, 0x9F,
+        0x29, 0x07, 0x30, 0xD7, 0xFA, 0xB7, 0xD6, 0xCF
+    };
+    static unsigned char dhg_1024[] = {
+        0x05
+    };
+
+    BIGNUM * dhp_bn = NULL;
+    BIGNUM * dhg_bn = NULL;
+    DH * dh = DH_new();
+
+    if (dh == NULL) return NULL;
+    dhp_bn = BN_bin2bn(dhp_1024, sizeof(dhp_1024), NULL);
+    dhg_bn = BN_bin2bn(dhg_1024, sizeof(dhg_1024), NULL);
+    if (dhp_bn == NULL || dhg_bn == NULL || !DH_set0_pqg(dh, dhp_bn, NULL, dhg_bn)) {
+        BN_free(dhp_bn);
+        BN_free(dhg_bn);
+        DH_free(dh);
+        return NULL;
+    }
+    return dh;
+}
 #endif /* ENABLE_SSL */
 
 static void delete_channel(ChannelTCP * c) {
-    trace(LOG_PROTOCOL, "Deleting channel %#lx", c);
+    trace(LOG_PROTOCOL, "Deleting channel %#" PRIxPTR, (uintptr_t)c);
     assert(c->lock_cnt == 0);
     assert(c->out_flush_cnt == 0);
     assert(c->magic == CHANNEL_MAGIC);
@@ -328,7 +389,7 @@ static void post_write_request(OutputBuffer * bf) {
             }
             else {
                 int error = set_ssl_errno();
-                trace(LOG_PROTOCOL, "Can't SSL_write() on channel %#lx: %s", c, errno_to_str(error));
+                trace(LOG_PROTOCOL, "Can't SSL_write() on channel %#" PRIxPTR ": %s", (uintptr_t)c, errno_to_str(error));
                 c->wr_req.type = AsyncReqSend;
                 c->wr_req.error = error;
                 c->wr_req.u.sio.rval = -1;
@@ -379,7 +440,7 @@ static void tcp_flush_with_flags(ChannelTCP * c, int flags) {
             ssize_t wr = send(c->socket, p, sz, flags);
             if (wr < 0) {
                 int err = errno;
-                trace(LOG_PROTOCOL, "Can't send() on channel %#lx: %s", c, errno_to_str(err));
+                trace(LOG_PROTOCOL, "Can't send() on channel %#" PRIxPTR ": %s", (uintptr_t)c, errno_to_str(err));
                 c->out_errno = err;
                 c->chan->out.cur = c->obuf->buf;
                 c->out_eom_cnt = 0;
@@ -601,7 +662,7 @@ static void tcp_post_read(InputBuf * ibuf, unsigned char * buf, size_t size) {
             }
             else {
                 if (c->chan->state != ChannelStateDisconnected) {
-                    trace(LOG_ALWAYS, "Can't SSL_read() on channel %#lx: %s", c, errno_to_str(set_ssl_errno()));
+                    trace(LOG_ALWAYS, "Can't SSL_read() on channel %#" PRIxPTR ": %s", (uintptr_t)c, errno_to_str(set_ssl_errno()));
                 }
                 c->read_done = 0;
                 post_event(c->rd_req.done, &c->rd_req);
@@ -675,7 +736,7 @@ static void send_eof_and_close(Channel * channel, int err) {
         channel->disconnected(channel);
     }
     else {
-        trace(LOG_PROTOCOL, "channel %#lx disconnected", c);
+        trace(LOG_PROTOCOL, "channel %#" PRIxPTR " disconnected", (uintptr_t)c);
         if (channel->protocol != NULL) protocol_release(channel->protocol);
     }
     channel->protocol = NULL;
@@ -694,7 +755,7 @@ static void handle_channel_msg(void * x) {
     has_msg = ibuf_start_message(&c->ibuf);
     if (has_msg <= 0) {
         if (has_msg < 0 && c->chan->state != ChannelStateDisconnected) {
-            trace(LOG_PROTOCOL, "Socket is shutdown by remote peer, channel %#lx %s", c, c->chan->peer_name);
+            trace(LOG_PROTOCOL, "Socket is shutdown by remote peer, channel %#" PRIxPTR " %s", (uintptr_t)c, c->chan->peer_name);
             channel_close(c->chan);
         }
     }
@@ -830,6 +891,10 @@ static ChannelTCP * create_channel(int sock, int en_ssl, int server, int unix_do
             const char * agent_id = get_agent_id();
             unsigned char buf[SSL_MAX_SSL_SESSION_ID_LENGTH];
             unsigned buf_pos = 0;
+            char fnm[FILE_PATH_SIZE];
+            FILE * fp = NULL;
+            DH * ssl_dh = NULL;
+            X509 * ssl_cert = NULL;
 
             ini_ssl();
             ssl_ctx = SSL_CTX_new(SSLv23_method());
@@ -839,6 +904,41 @@ static ChannelTCP * create_channel(int sock, int en_ssl, int server, int unix_do
                 agent_id++;
             }
             if (!SSL_CTX_set_session_id_context(ssl_ctx, buf, buf_pos)) err = set_ssl_errno();
+            if (!err && (ssl_dh = get_dh1024()) == NULL) err = set_ssl_errno();
+            if (!err) {
+                int codes = 0;
+                if (!DH_check(ssl_dh, &codes)) {
+                    err = set_ssl_errno();
+                }
+                else {
+                    const BIGNUM * p = NULL;
+                    const BIGNUM * g = NULL;
+                    DH_get0_pqg(ssl_dh, &p, NULL, &g);
+                    if (BN_is_word(g, DH_GENERATOR_2)) {
+                        long residue = BN_mod_word(p, 24);
+                        if (residue == 11 || residue == 23) {
+                            codes &= ~DH_NOT_SUITABLE_GENERATOR;
+                        }
+                    }
+                    if (codes & DH_UNABLE_TO_CHECK_GENERATOR) {
+                        err = set_errno(ERR_OTHER, "DH_check: failed to test generator");
+                    }
+                    else if (codes & DH_NOT_SUITABLE_GENERATOR) {
+                        err = set_errno(ERR_OTHER, "DH_check: not a suitable generator");
+                    }
+                    else if (codes & DH_CHECK_P_NOT_PRIME) {
+                        err = set_errno(ERR_OTHER, "DH_check: not a prime");
+                    }
+                    else if (codes & DH_CHECK_P_NOT_SAFE_PRIME) {
+                        err = set_errno(ERR_OTHER, "DH_check: not a safe prime");
+                    }
+                }
+            }
+            if (!err && !SSL_CTX_set_tmp_dh(ssl_ctx, ssl_dh)) err = set_ssl_errno();
+            if (ssl_dh != NULL) {
+                DH_free(ssl_dh);
+                ssl_dh = NULL;
+            }
             if (err) {
                 SSL_CTX_free(ssl_ctx);
                 ssl_ctx = NULL;
@@ -846,12 +946,6 @@ static ChannelTCP * create_channel(int sock, int en_ssl, int server, int unix_do
                 set_errno(err, "Cannot create SSL context");
                 return NULL;
             }
-        }
-
-        if (ssl_cert == NULL) {
-            int err = 0;
-            char fnm[FILE_PATH_SIZE];
-            FILE * fp = NULL;
             snprintf(fnm, sizeof(fnm), "%s/ssl/local.priv", tcf_dir);
             if (!err && (fp = fopen(fnm, "r")) == NULL) err = errno;
             if (!err && (rsa_key = PEM_read_RSAPrivateKey(fp, NULL, NULL, NULL)) == NULL) err = set_ssl_errno();
@@ -862,7 +956,14 @@ static ChannelTCP * create_channel(int sock, int en_ssl, int server, int unix_do
                 if (!err && (ssl_cert = PEM_read_X509(fp, NULL, NULL, NULL)) == NULL) err = set_ssl_errno();
                 if (!err && fclose(fp) != 0) err = errno;
             }
+            if (!err) {
+                SSL_CTX_use_certificate(ssl_ctx, ssl_cert);
+                SSL_CTX_use_RSAPrivateKey(ssl_ctx, rsa_key);
+                if (!SSL_CTX_check_private_key(ssl_ctx)) err = set_ssl_errno();
+            }
             if (err) {
+                SSL_CTX_free(ssl_ctx);
+                ssl_ctx = NULL;
                 trace(LOG_ALWAYS, "Cannot read SSL certificate %s: %s", fnm, errno_to_str(err));
                 set_errno(err, "Cannot read SSL certificate");
                 return NULL;
@@ -883,9 +984,20 @@ static ChannelTCP * create_channel(int sock, int en_ssl, int server, int unix_do
         }
 #endif
         ssl = SSL_new(ssl_ctx);
+#if OPENSSL_VERSION_NUMBER >= 0x10100000
+        SSL_set_min_proto_version(ssl, TLS1_1_VERSION);
+#endif
+        if (log_mode & LOG_PROTOCOL) {
+            int index = 0;
+            const char * name = NULL;
+            trace(LOG_PROTOCOL, "Enabled SSL cipher suites:");
+            for (index = 0;; index++) {
+                name = SSL_get_cipher_list(ssl, index);
+                if (name == NULL) break;
+                trace(LOG_PROTOCOL, "  %s", name);
+            }
+        }
         SSL_set_fd(ssl, sock);
-        SSL_use_certificate(ssl, ssl_cert);
-        SSL_use_RSAPrivateKey(ssl, rsa_key);
         if (server) SSL_set_accept_state(ssl);
         else SSL_set_connect_state(ssl);
 #endif
@@ -958,18 +1070,17 @@ static void refresh_peer_server(int sock, PeerServer * ps) {
     const char * transport = peer_server_getprop(ps, "TransportName", NULL);
     assert(transport != NULL);
     if (strcmp(transport, "UNIX") == 0) {
-        char str_id[64];
         PeerServer * ps2 = peer_server_alloc();
+        char * str_id = loc_printf("%s:%s", transport, peer_server_getprop(ps, "Host", ""));
         ps2->flags = ps->flags | PS_FLAG_LOCAL | PS_FLAG_DISCOVERABLE;
         for (i = 0; i < ps->ind; i++) {
             peer_server_addprop(ps2, loc_strdup(ps->list[i].name), loc_strdup(ps->list[i].value));
         }
-        snprintf(str_id, sizeof(str_id), "%s:%s", transport, peer_server_getprop(ps, "Host", ""));
         for (i = 0; str_id[i]; i++) {
             /* Character '/' is prohibited in a peer ID string */
             if (str_id[i] == '/') str_id[i] = '|';
         }
-        peer_server_addprop(ps2, loc_strdup("ID"), loc_strdup(str_id));
+        peer_server_addprop(ps2, loc_strdup("ID"), str_id);
         peer_server_add(ps2, PEER_DATA_RETENTION_PERIOD * 2);
     }
     else {
@@ -991,7 +1102,6 @@ static void refresh_peer_server(int sock, PeerServer * ps) {
         ifcind = build_ifclist(sock, MAX_IFC, ifclist);
         while (ifcind-- > 0) {
             char str_host[64];
-            char str_id[64];
             PeerServer * ps2;
             if (sin.sin_addr.s_addr != INADDR_ANY &&
                 (ifclist[ifcind].addr & ifclist[ifcind].mask) !=
@@ -1005,8 +1115,7 @@ static void refresh_peer_server(int sock, PeerServer * ps) {
                 peer_server_addprop(ps2, loc_strdup(ps->list[i].name), loc_strdup(ps->list[i].value));
             }
             inet_ntop(AF_INET, &src_addr, str_host, sizeof(str_host));
-            snprintf(str_id, sizeof(str_id), "%s:%s:%s", transport, str_host, str_port);
-            peer_server_addprop(ps2, loc_strdup("ID"), loc_strdup(str_id));
+            peer_server_addprop(ps2, loc_strdup("ID"), loc_printf("%s:%s:%s", transport, str_host, str_port));
             peer_server_addprop(ps2, loc_strdup("Host"), loc_strdup(str_host));
             peer_server_addprop(ps2, loc_strdup("Port"), loc_strdup(str_port));
             peer_server_add(ps2, PEER_DATA_RETENTION_PERIOD * 2);
@@ -1026,18 +1135,17 @@ static void refresh_all_peer_servers(void * x) {
 
 static void set_peer_addr(ChannelTCP * c, struct sockaddr * addr, int addr_len) {
     /* Create a human readable channel name that uniquely identifies remote peer */
-    char name[128];
 #if ENABLE_Unix_Domain
     if (c->unix_domain) {
         assert(addr->sa_family == AF_UNIX);
-        snprintf(name, sizeof(name), "UNIX:%s", ((struct sockaddr_un *)addr)->sun_path);
+        c->chan->peer_name = loc_printf("UNIX:%s", ((struct sockaddr_un *)addr)->sun_path);
     }
     else
 #endif
     {
         char nbuf[128];
         assert(addr->sa_family == AF_INET);
-        snprintf(name, sizeof(name), "%s:%s:%d",
+        c->chan->peer_name = loc_printf("%s:%s:%d",
                 c->ssl != NULL ? "SSL" : "TCP",
                 inet_ntop(addr->sa_family, &((struct sockaddr_in *)addr)->sin_addr, nbuf, sizeof(nbuf)),
                 ntohs(((struct sockaddr_in *)addr)->sin_port));
@@ -1045,7 +1153,6 @@ static void set_peer_addr(ChannelTCP * c, struct sockaddr * addr, int addr_len) 
     c->addr_len = addr_len;
     c->addr_buf = (struct sockaddr *)loc_alloc(addr_len);
     memcpy(c->addr_buf, addr, addr_len);
-    c->chan->peer_name = loc_strdup(name);
 }
 
 static void tcp_server_accept_done(void * x) {
@@ -1149,7 +1256,8 @@ static int setup_unix_sockaddr(PeerServer * ps, struct sockaddr_un * localhost) 
     memset(localhost, 0, sizeof(struct sockaddr_un));
 
     if (strlen(host) >= sizeof(localhost->sun_path)) {
-        trace(LOG_ALWAYS, "Socket file path is too long (%d > %d)", strlen(host), sizeof(localhost->sun_path) - 1);
+        trace(LOG_ALWAYS, "Socket file path is too long (%u > %u)",
+            (unsigned)strlen(host), (unsigned)sizeof(localhost->sun_path) - 1);
         return E2BIG;
     }
 
@@ -1476,6 +1584,7 @@ void generate_ssl_certificate(void) {
     char fnm[FILE_PATH_SIZE];
     X509 * cert = NULL;
     RSA * rsa = NULL;
+    BIGNUM * bne = NULL;
     EVP_PKEY * rsa_key = NULL;
     ASN1_INTEGER * serial = NULL;
     X509_NAME * name = NULL;
@@ -1484,7 +1593,15 @@ void generate_ssl_certificate(void) {
     FILE * fp = NULL;
 
     ini_ssl();
-    if (!err && (rsa = RSA_generate_key(2048, 3, NULL, (void *)"RSA")) == NULL) err = set_ssl_errno();
+#if OPENSSL_VERSION_NUMBER >= 0x10100000
+    /* RSA_generate_key() is deprecated in OpenSSL 1.1.0 */
+    bne = BN_new();
+    rsa = RSA_new();
+    if (!err && !BN_set_word(bne, 3)) err = set_ssl_errno();
+    if (!err && !RSA_generate_key_ex(rsa, 2048, bne, NULL)) err = set_ssl_errno();
+#else
+    if (!err && (rsa = RSA_generate_key(2048, 3, NULL, NULL)) == NULL) err = set_ssl_errno();
+#endif
     if (!err && !RSA_check_key(rsa)) err = set_ssl_errno();
     if (!err && gethostname(subject_name, sizeof(subject_name)) != 0) err = errno;
     if (!err) {
@@ -1506,7 +1623,7 @@ void generate_ssl_certificate(void) {
             (unsigned char *)issuer_name, strlen(issuer_name), -1, 0);
     }
     if (!err && !X509_set_pubkey(cert, rsa_key)) err = set_ssl_errno();
-    if (!err) X509_sign(cert, rsa_key, EVP_md5());
+    if (!err) X509_sign(cert, rsa_key, EVP_sha256());
     if (!err && !X509_verify(cert, rsa_key)) err = set_ssl_errno();
     if (stat(tcf_dir, &st) != 0 && mkdir(tcf_dir, MKDIR_MODE_TCF) != 0) err = errno;
     snprintf(fnm, sizeof(fnm), "%s/ssl", tcf_dir);
@@ -1529,12 +1646,14 @@ void generate_ssl_certificate(void) {
         fprintf(stderr, "Cannot create SSL certificate: %s\n", errno_to_str(err));
     }
     if (cert != NULL) X509_free(cert);
-    if (rsa != NULL) RSA_free(rsa);
+    if (rsa_key != NULL) EVP_PKEY_free(rsa_key);
+    else if (rsa != NULL) RSA_free(rsa);
+    if (bne != NULL) BN_free(bne);
 #else /* ENABLE_SSL */
     fprintf(stderr, "SSL support not available\n");
 #endif /* ENABLE_SSL */
 }
 
-void ini_channel_tcp() {
+void ini_channel_tcp(void) {
     channel_tcp_extension_offset = channel_extension(sizeof(ChannelTCP *));
 }

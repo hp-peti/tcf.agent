@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2016 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2018 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -17,10 +17,6 @@
  * This module implements reading and caching of ELF files.
  */
 
-#if defined(__GNUC__) && !defined(_GNU_SOURCE)
-#  define _GNU_SOURCE
-#endif
-
 #include <tcf/config.h>
 
 #if ENABLE_ELF
@@ -35,6 +31,7 @@
 #include <tcf/framework/mdep-fs.h>
 #include <tcf/framework/myalloc.h>
 #include <tcf/framework/exceptions.h>
+#include <tcf/framework/compression.h>
 #include <tcf/framework/events.h>
 #include <tcf/framework/cache.h>
 #include <tcf/framework/trace.h>
@@ -62,9 +59,17 @@
 #define MAX_FILE_AGE 60
 #define MAX_FILE_CNT 100
 
+#ifndef SHF_COMPRESSED
+#define SHF_COMPRESSED 0x00000800
+#endif
+#ifndef ELFCOMPRESS_ZLIB
+#define ELFCOMPRESS_ZLIB 1
+#endif
 #ifndef ARCH_SHF_SMALL
 #define ARCH_SHF_SMALL 0
 #endif
+
+#define SHDR_BUF_SIZE 64
 
 typedef struct FileINode {
     struct FileINode * next;
@@ -708,18 +713,28 @@ static ELF_File * create_elf_cache(const char * file_name) {
             if (error == 0 && hdr.e_shoff == 0) {
                 error = set_errno(ERR_INV_FORMAT, "Invalid section header table's file offset");
             }
-            if (error == 0 && lseek(file->fd, hdr.e_shoff, SEEK_SET) == (off_t)-1) error = errno;
             if (error == 0) {
                 unsigned cnt = 0;
+                uint8_t * shdr_buf = (uint8_t *)tmp_alloc(hdr.e_shentsize * SHDR_BUF_SIZE);
                 file->sections = (ELF_Section *)loc_alloc_zero(sizeof(ELF_Section) * hdr.e_shnum);
                 file->section_cnt = hdr.e_shnum;
                 while (error == 0 && cnt < hdr.e_shnum) {
-                    Elf32_Shdr shdr;
-                    memset(&shdr, 0, sizeof(shdr));
-                    if (error == 0 && sizeof(shdr) < hdr.e_shentsize) error = ERR_INV_FORMAT;
-                    if (error == 0 && read_fully(file->fd, (char *)&shdr, hdr.e_shentsize) < 0) error = errno;
+                    if (cnt % SHDR_BUF_SIZE == 0) {
+                        unsigned n = hdr.e_shnum - cnt;
+                        if (n > SHDR_BUF_SIZE) n = SHDR_BUF_SIZE;
+                        if (error == 0 && lseek(file->fd, hdr.e_shoff + cnt * hdr.e_shentsize, SEEK_SET) == (off_t)-1) error = errno;
+                        if (error == 0 && read_fully(file->fd, shdr_buf, hdr.e_shentsize * n) < 0) error = errno;
+                    }
                     if (error == 0) {
+                        Elf32_Shdr shdr;
                         ELF_Section * sec = file->sections + cnt;
+                        if (hdr.e_shentsize < sizeof(shdr)) {
+                            memcpy(&shdr, shdr_buf + cnt % SHDR_BUF_SIZE * hdr.e_shentsize, hdr.e_shentsize);
+                            memset((uint8_t *)&shdr + hdr.e_shentsize, 0, sizeof(shdr) - hdr.e_shentsize);
+                        }
+                        else {
+                            memcpy(&shdr, shdr_buf + cnt % SHDR_BUF_SIZE * hdr.e_shentsize, sizeof(shdr));
+                        }
                         if (file->byte_swap) {
                             SWAP(shdr.sh_name);
                             SWAP(shdr.sh_type);
@@ -744,6 +759,33 @@ static ELF_File * create_elf_cache(const char * file_name) {
                         sec->link = shdr.sh_link;
                         sec->info = shdr.sh_info;
                         sec->entsize = shdr.sh_entsize;
+                        if (sec->flags & SHF_COMPRESSED) {
+                            struct {
+                                uint32_t type;
+                                uint32_t size;
+                                uint32_t alignment;
+                            } buf;
+                            if (sec->size < sizeof(buf)) {
+                                error = set_errno(ERR_INV_FORMAT, "Invalid compressed section header");
+                                break;
+                            }
+                            sec->compressed_size = sec->size - sizeof(buf);
+                            sec->compressed_offset = sec->offset + sizeof(buf);
+                            sec->size = 0;
+                            if (lseek(file->fd, sec->offset, SEEK_SET) == (off_t)-1 ||
+                                read_fully(file->fd, &buf, sizeof(buf)) < 0) {
+                                error = set_errno(errno, "Cannot read symbol file");
+                                break;
+                            }
+                            if (file->byte_swap) {
+                                SWAP(buf.type);
+                                SWAP(buf.size);
+                                SWAP(buf.alignment);
+                            }
+                            sec->compressed_type = buf.type;
+                            sec->size = buf.size;
+                            sec->alignment = buf.alignment;
+                        }
                         if (sec->type == SHT_SYMTAB || sec->type == SHT_DYNSYM) {
                             sec->sym_count = (unsigned)(sec->size / sizeof(Elf32_Sym));
                         }
@@ -824,18 +866,28 @@ static ELF_File * create_elf_cache(const char * file_name) {
             if (error == 0 && hdr.e_shoff == 0) {
                 error = set_errno(ERR_INV_FORMAT, "Invalid section header table's file offset");
             }
-            if (error == 0 && lseek(file->fd, hdr.e_shoff, SEEK_SET) == (off_t)-1) error = errno;
             if (error == 0) {
                 unsigned cnt = 0;
+                uint8_t * shdr_buf = (uint8_t *)tmp_alloc(hdr.e_shentsize * SHDR_BUF_SIZE);
                 file->sections = (ELF_Section *)loc_alloc_zero(sizeof(ELF_Section) * hdr.e_shnum);
                 file->section_cnt = hdr.e_shnum;
                 while (error == 0 && cnt < hdr.e_shnum) {
-                    Elf64_Shdr shdr;
-                    memset(&shdr, 0, sizeof(shdr));
-                    if (error == 0 && sizeof(shdr) < hdr.e_shentsize) error = ERR_INV_FORMAT;
-                    if (error == 0 && read_fully(file->fd, (char *)&shdr, hdr.e_shentsize) < 0) error = errno;
+                    if (cnt % SHDR_BUF_SIZE == 0) {
+                        unsigned n = hdr.e_shnum - cnt;
+                        if (n > SHDR_BUF_SIZE) n = SHDR_BUF_SIZE;
+                        if (error == 0 && lseek(file->fd, hdr.e_shoff + cnt * hdr.e_shentsize, SEEK_SET) == (off_t)-1) error = errno;
+                        if (error == 0 && read_fully(file->fd, shdr_buf, hdr.e_shentsize * n) < 0) error = errno;
+                    }
                     if (error == 0) {
+                        Elf64_Shdr shdr;
                         ELF_Section * sec = file->sections + cnt;
+                        if (hdr.e_shentsize < sizeof(shdr)) {
+                            memcpy(&shdr, shdr_buf + cnt % SHDR_BUF_SIZE * hdr.e_shentsize, hdr.e_shentsize);
+                            memset((uint8_t *)&shdr + hdr.e_shentsize, 0, sizeof(shdr) - hdr.e_shentsize);
+                        }
+                        else {
+                            memcpy(&shdr, shdr_buf + cnt % SHDR_BUF_SIZE * hdr.e_shentsize, sizeof(shdr));
+                        }
                         if (file->byte_swap) {
                             SWAP(shdr.sh_name);
                             SWAP(shdr.sh_type);
@@ -860,6 +912,34 @@ static ELF_File * create_elf_cache(const char * file_name) {
                         sec->link = shdr.sh_link;
                         sec->info = shdr.sh_info;
                         sec->entsize = (U4_T)shdr.sh_entsize;
+                        if (sec->flags & SHF_COMPRESSED) {
+                            struct {
+                                uint32_t type;
+                                uint32_t reserved;
+                                uint64_t size;
+                                uint64_t alignment;
+                            } buf;
+                            if (sec->size < sizeof(buf)) {
+                                error = set_errno(ERR_INV_FORMAT, "Invalid compressed section header");
+                                break;
+                            }
+                            sec->compressed_size = sec->size - sizeof(buf);
+                            sec->compressed_offset = sec->offset + sizeof(buf);
+                            sec->size = 0;
+                            if (lseek(file->fd, sec->offset, SEEK_SET) == (off_t)-1 ||
+                                read_fully(file->fd, &buf, sizeof(buf)) < 0) {
+                                error = set_errno(errno, "Cannot read symbol file");
+                                break;
+                            }
+                            if (file->byte_swap) {
+                                SWAP(buf.type);
+                                SWAP(buf.size);
+                                SWAP(buf.alignment);
+                            }
+                            sec->compressed_type = buf.type;
+                            sec->size = buf.size;
+                            sec->alignment = (U4_T)buf.alignment;
+                        }
                         if (sec->type == SHT_SYMTAB || sec->type == SHT_DYNSYM) {
                             sec->sym_count = (unsigned)(sec->size / sizeof(Elf64_Sym));
                         }
@@ -997,7 +1077,7 @@ int elf_load(ELF_Section * s) {
 
 #if USE_MMAP
 #if defined(_WIN32) || defined(__CYGWIN__)
-    if (s->size >= 0x100000) {
+    if (s->size >= 0x100000 && (s->flags & SHF_COMPRESSED) == 0) {
         ELF_File * file = s->file;
         if (file->mmap_handle == NULL) {
             file->mmap_handle = CreateFileMapping(
@@ -1022,12 +1102,12 @@ int elf_load(ELF_Section * s) {
             }
             else {
                 s->data = (char *)s->mmap_addr + (size_t)(s->offset - offs);
-                trace(LOG_ELF, "Section %s in ELF file %s is mapped to %#lx", s->name, s->file->name, s->data);
+                trace(LOG_ELF, "Section %s in ELF file %s is mapped to %#" PRIxPTR, s->name, s->file->name, (uintptr_t)s->data);
             }
         }
     }
 #else
-    if (s->size >= 0x100000) {
+    if (s->size >= 0x100000 && (s->flags & SHF_COMPRESSED) == 0) {
         long page = sysconf(_SC_PAGE_SIZE);
         off_t offs = (off_t)s->offset;
         offs -= offs % page;
@@ -1039,7 +1119,7 @@ int elf_load(ELF_Section * s) {
         }
         else {
             s->data = (char *)s->mmap_addr + (size_t)(s->offset - offs);
-            trace(LOG_ELF, "Section %s in ELF file %s is mapped to %#lx", s->name, s->file->name, s->data);
+            trace(LOG_ELF, "Section %s in ELF file %s is mapped to %#" PRIxPTR, s->name, s->file->name, (uintptr_t)s->data);
         }
     }
 #endif
@@ -1050,6 +1130,46 @@ int elf_load(ELF_Section * s) {
         reopen_file(file);
         if (file->error) {
             set_error_report_errno(file->error);
+            return -1;
+        }
+        if (s->flags & SHF_COMPRESSED) {
+            if (s->compressed_type == ELFCOMPRESS_ZLIB && s->compressed_size > 6) {
+                uint8_t * buf = (uint8_t *)loc_alloc((size_t)s->compressed_size);
+                if (lseek(file->fd, s->compressed_offset, SEEK_SET) == (off_t)-1 ||
+                    read_fully(file->fd, buf, (size_t)s->compressed_size) < 0) {
+                    int error = errno;
+                    loc_free(buf);
+                    set_errno(error, "Cannot read symbol file");
+                    return -1;
+                }
+                else {
+                    unsigned pos = 0;
+                    unsigned cmf = buf[pos++];
+                    unsigned flg = buf[pos++];
+                    if ((cmf & 0xf) != 0x08) {
+                        loc_free(buf);
+                        set_errno(ERR_INV_DWARF, "Unsupported compression type");
+                        return -1;
+                    }
+                    if ((cmf * 256 + flg) % 31 == 0 && (flg & 0x20) == 0) {
+                        Trap trap;
+                        s->data = loc_alloc_zero((size_t)s->size);
+                        if (set_trap(&trap)) {
+                            pos += decompress(buf + pos, (size_t)(s->compressed_size - pos), s->data, (size_t)s->size);
+                            if (pos + 4 <= s->compressed_size) {
+                                /* TODO: checksum verification */
+                                clear_trap(&trap);
+                                loc_free(buf);
+                                return 0;
+                            }
+                        }
+                        loc_free(s->data);
+                        s->data = NULL;
+                    }
+                }
+                loc_free(buf);
+            }
+            set_errno(ERR_INV_DWARF, "Corrupted compressed section");
             return -1;
         }
         s->data = loc_alloc((size_t)s->size);
@@ -1377,7 +1497,15 @@ static void search_regions(MemoryMap * map, ContextAddress addr0, ContextAddress
             }
         }
         else if (r->size > 0 && r->addr <= addr1 && r->addr + r->size - 1 >= addr0) {
-            *add_region(res) = *r;
+            /* Even if the addresses are in the given range, we MUST check that the
+             * region actually belongs to an ELF file. Without the check below, we
+             * could end up using the ELF reader even if the region belongs to a
+             * PE/COFF file.
+             */
+            const ELF_File * file = elf_open_memory_region_file(r, NULL);
+            if (file) {
+                *add_region(res) = *r;
+            }
         }
         else if (r->size == 0 && r->sect_name != NULL && r->addr <= addr1 && r->addr >= addr0) {
             /* Special case: section symbol of a zero length section */
@@ -1387,6 +1515,7 @@ static void search_regions(MemoryMap * map, ContextAddress addr0, ContextAddress
 }
 
 int elf_get_map(Context * ctx, ContextAddress addr0, ContextAddress addr1, MemoryMap * map) {
+    unsigned i;
     map->region_cnt = 0;
     ctx = context_get_group(ctx, CONTEXT_GROUP_PROCESS);
 #if ENABLE_MemoryMap
@@ -1412,6 +1541,30 @@ int elf_get_map(Context * ctx, ContextAddress addr0, ContextAddress addr1, Memor
         }
     }
 #endif
+    for (i = 0; i + 1 < map->region_cnt; i++) {
+        MemoryRegion * m = map->regions + i;
+        MemoryRegion * r = m + 1;
+        if (m->file_size == m->size && m->file_offs < r->file_offs && m->file_offs + m->file_size > r->file_offs &&
+                m->file_name != NULL && r->file_name != NULL && strcmp(m->file_name, r->file_name) == 0) {
+            /* Ambiguity: overlapping regions */
+            ELF_File * elf = elf_open(r->file_name);
+            for (i = 0; i < elf->pheader_cnt; i++) {
+                ELF_PHeader * p = elf->pheaders + i;
+                if (p->type == PT_LOAD && p->offset == m->file_offs && p->mem_size < m->size) {
+                    m->file_size = p->mem_size;
+                    m->size = p->mem_size;
+                    if (m->file_offs + m->size > r->file_offs && p->mem_size == p->file_size) {
+                        uint64_t diff = m->file_offs + m->file_size - r->file_offs;
+                        r->file_offs += diff;
+                        r->file_size -= diff;
+                        r->addr += diff;
+                        r->size -= diff;
+                    }
+                    break;
+                }
+            }
+        }
+    }
     return 0;
 }
 
@@ -1927,7 +2080,9 @@ void unpack_elf_symbol_info(ELF_Section * sym_sec, U4_T index, ELF_SymbolInfo * 
             info->type = STT_FUNC;
         }
     }
-    else if (IS_PPC64_FUNC_OPD(file, info)) info->type = STT_FUNC;
+    else if (IS_PPC64_FUNC_OPD(file, info)) {
+        info->type = STT_FUNC;
+    }
 }
 
 static int create_symbol_names_hash(ELF_Section * tbl) {

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2016 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2017 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -43,9 +43,7 @@
 #include <tcf/framework/json.h>
 #include <tcf/framework/cache.h>
 #include <tcf/framework/trace.h>
-#include <tcf/framework/context.h>
 #include <tcf/services/runctrl.h>
-#include <tcf/services/symbols.h>
 #include <tcf/services/funccall.h>
 #include <tcf/services/stacktrace.h>
 #include <tcf/services/memoryservice.h>
@@ -1568,7 +1566,10 @@ static void load_value(Value * v) {
         v->value = buf;
         v->remote = 0;
     }
-    else if (v->value == NULL) {
+    else if (v->value != NULL) {
+        /* OK */
+    }
+    else if (v->loc != NULL) {
         size_t size = 0;
         void * value = NULL;
         LocationExpressionState * loc = v->loc;
@@ -1577,6 +1578,9 @@ static void load_value(Value * v) {
         v->value = value;
         v->size = (ContextAddress)size;
         sign_extend(v, loc);
+    }
+    else {
+        error(ERR_OTHER, "Has no value");
     }
 }
 
@@ -2197,15 +2201,21 @@ static void op_deref(int mode, Value * v) {
             v->constant = 0;
             set_value_endianness(v, NULL, type);
         }
-        v->sym_list = NULL;
         v->sym = NULL;
         v->reg = NULL;
+        v->function = 0;
+        v->func_cb = NULL;
+        v->field_cb = NULL;
+        v->sym_list = NULL;
     }
     v->type = type;
     if (get_symbol_type_class(v->type, &v->type_class) < 0) {
         error(errno, "Cannot retrieve symbol type class");
     }
-    if (get_symbol_size(v->type, &v->size) < 0) {
+    if (v->type_class == TYPE_CLASS_FUNCTION) {
+        v->size = 0;
+    }
+    else if (get_symbol_size(v->type, &v->size) < 0) {
         error(errno, "Cannot retrieve symbol size");
     }
     set_value_props(v);
@@ -2447,16 +2457,22 @@ static void op_index(int mode, Value * v) {
             }
             v->address = (ContextAddress)to_uns(mode, v);
             v->remote = 1;
-            v->sym_list = NULL;
-            v->sym = NULL;
-            v->reg = NULL;
             v->loc = NULL;
             v->value = NULL;
             v->constant = 0;
             set_value_endianness(v, NULL, type);
         }
+        v->sym = NULL;
+        v->reg = NULL;
+        v->function = 0;
+        v->func_cb = NULL;
+        v->field_cb = NULL;
+        v->sym_list = NULL;
     }
-    if (get_symbol_size(type, &size) < 0) {
+    if (type_class == TYPE_CLASS_FUNCTION) {
+        size = 0;
+    }
+    else if (get_symbol_size(type, &size) < 0) {
         error(errno, "Cannot get array element size");
     }
 
@@ -2699,7 +2715,7 @@ static void funcccall_breakpoint(Context * ctx, void * args) {
         suspend_debug_context(ctx);
     }
     else if (state->committed) {
-        if (state->error) trace(LOG_ALWAYS, "Cannot restore state",
+        if (state->error) trace(LOG_ALWAYS, "Cannot restore state: %s",
             errno_to_str(set_error_report_errno(state->error)));
         free_funccall_state(state);
     }
@@ -2861,7 +2877,7 @@ static void op_funccall(int mode, Value * v) {
 
                 /* Create breakpoint at the function return address */
                 assert(state->bp == NULL);
-                snprintf(ret_addr, sizeof(ret_addr), "0x%" PRIX64, state->ret_addr);
+                snprintf(ret_addr, sizeof(ret_addr), "%#" PRIx64, state->ret_addr);
                 state->bp = create_eventpoint(ret_addr, state->ctx, funcccall_breakpoint, state);
 
                 /* Set PC to the function address */
@@ -2952,7 +2968,7 @@ static void resolve_ref_type(int mode, Value * v) {
         if (get_symbol_type(type, &next) < 0) {
             error(errno, "Cannot retrieve symbol type");
         }
-        if (next == type) break;
+        if (next == NULL || next == type) break;
         type = next;
     }
 #endif
@@ -3204,15 +3220,17 @@ static void lazy_unary_expression(int mode, Value * v) {
                 else {
                     v->address = (ContextAddress)to_uns(mode, v);
                     v->remote = 1;
-                    v->sym_list = NULL;
-                    v->sym = NULL;
-                    v->reg = NULL;
-                    v->loc = NULL;
                     v->value = NULL;
                     v->size = type_size;
                     v->big_endian = expression_context->big_endian;
                     v->constant = 0;
                 }
+                v->sym = NULL;
+                v->reg = NULL;
+                v->function = 0;
+                v->func_cb = NULL;
+                v->field_cb = NULL;
+                v->sym_list = NULL;
                 v->type = type;
                 v->type_class = type_class;
             }
@@ -3286,6 +3304,8 @@ static void pm_expression(int mode, Value * v) {
             v->loc = NULL;
             v->remote = 1;
             v->function = 0;
+            v->func_cb = NULL;
+            v->field_cb = NULL;
             v->value = NULL;
             v->constant = 0;
             if (get_symbol_base_type(x.type, &v->type) < 0) {
@@ -4789,7 +4809,7 @@ static void context_intercepted(Context * ctx, void * args) {
                 state->error = get_error_report(set_errno(ERR_OTHER,
                     "Intercepted while executing injected function call"));
             }
-            cache_notify(&state->cache);
+            cache_notify_later(&state->cache);
         }
     }
 }

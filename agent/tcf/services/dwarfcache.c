@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2007, 2015 Wind River Systems, Inc. and others.
+ * Copyright (c) 2007-2019 Wind River Systems, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
@@ -28,7 +28,6 @@
 #include <tcf/framework/myalloc.h>
 #include <tcf/framework/trace.h>
 #include <tcf/services/dwarf.h>
-#include <tcf/services/dwarfio.h>
 #include <tcf/services/dwarfcache.h>
 #include <tcf/services/dwarfexpr.h>
 #include <tcf/services/stacktrace.h>
@@ -877,10 +876,28 @@ static void read_object_info(U2_T Tag, U2_T Attr, U2_T Form) {
             Unit->mDir = (char *)dio_gFormDataAddr;
             break;
         case AT_stmt_list:
-            if (Form == FORM_ADDR) {
-                /* Workaround: some compilers incorrectly use FORM_ADDR for AT_stmt_list */
+            if (Form == FORM_ADDR || Form == FORM_SEC_OFFSET) {
                 Unit->mLineInfoOffs = dio_gFormData;
-                if (dio_gFormSection != NULL) Unit->mLineInfoOffs -= dio_gFormSection->addr;
+                if (dio_gFormSection != NULL) {
+                    Unit->mLineInfoOffs -= dio_gFormSection->addr;
+                    Unit->mLineInfoSection = dio_gFormSection;
+                }
+                else {
+                    unsigned idx;
+                    ELF_File * file = Unit->mFile;
+                    for (idx = 1; idx < file->section_cnt; idx++) {
+                        ELF_Section * sec = file->sections + idx;
+                        if (sec->size == 0) continue;
+                        if (sec->name == NULL) continue;
+                        if (sec->type == SHT_NOBITS) continue;
+                        if (Unit->mLineInfoOffs >= sec->addr && Unit->mLineInfoOffs < sec->addr + sec->size &&
+                            strcmp(sec->name, sUnitDesc.mVersion <= 1 ? ".line" : ".debug_line") == 0) {
+                            Unit->mLineInfoOffs -= sec->addr;
+                            Unit->mLineInfoSection = sec;
+                            break;
+                        }
+                    }
+                }
                 break;
             }
             dio_ChkData(Form);
@@ -888,6 +905,10 @@ static void read_object_info(U2_T Tag, U2_T Attr, U2_T Form) {
             break;
         case AT_base_types:
             Unit->mBaseTypes = add_comp_unit((ContextAddress)dio_gFormData);
+            break;
+        case AT_producer:
+            dio_ChkString(Form);
+            Unit->mProducer = (char *)dio_gFormDataAddr;
             break;
         case AT_language:
             dio_ChkData(Form);
@@ -950,7 +971,7 @@ static void read_object_refs(ELF_Section * Section) {
                     ref.obj->mFlags |= ref.org->mFlags & ~(DOIF_children_loaded | DOIF_declaration | DOIF_specification);
                     if (ref.obj->mFlags & DOIF_specification) {
                         ref.org->mDefinition = ref.obj;
-                        if ((ref.obj->mFlags & (DOIF_low_pc | DOIF_ranges)) == 0) {
+                        if ((ref.obj->mFlags & (DOIF_low_pc | DOIF_ranges | DOIF_location)) == 0) {
                             ref.obj->mFlags |= ref.org->mFlags & DOIF_declaration;
                         }
                     }
@@ -1053,6 +1074,14 @@ static void add_object_addr_ranges(ObjectInfo * info) {
     }
 }
 
+static int is_debug_aranges_aligned(void) {
+    /* The DWARF standard does not require address range descriptors of .debug_aranges to be aligned,
+     * but some compilers (e.g. GCC) insert padding bytes to align descriptors at <address-size>*2 */
+    if (sCompUnit->mProducer == NULL) return 1;
+    if (strncmp(sCompUnit->mProducer, "IAR ", 4) == 0) return 0;
+    return 1;
+}
+
 static void load_addr_ranges(ELF_Section * debug_info) {
     Trap trap;
     unsigned idx;
@@ -1076,6 +1105,10 @@ static void load_addr_ranges(ELF_Section * debug_info) {
                         size = dio_ReadU8();
                     }
                     next = dio_GetPos() + size;
+                    if (next > sec->size) {
+                        trace(LOG_ELF, "Ignoring entry in .debug_aranges section: invalid entry size.");
+                        break;
+                    }
                     if (dio_ReadU2() == 2) {
                         ELF_Section * unit_sec = NULL;
                         U8_T unit_addr = dio_ReadAddressX(&unit_sec, dwarf64 ? 8 : 4);
@@ -1086,7 +1119,9 @@ static void load_addr_ranges(ELF_Section * debug_info) {
                         sCompUnit = find_comp_unit(unit_sec, (ContextAddress)unit_addr);
                         if (sCompUnit == NULL) str_exception(ERR_INV_DWARF, "invalid .debug_aranges section");
                         sCompUnit->mObject->mFlags |= DOIF_aranges;
-                        while (dio_GetPos() % (addr_size * 2) != 0) dio_Skip(1);
+                        if (is_debug_aranges_aligned()) {
+                            while (dio_GetPos() % (addr_size * 2) != 0) dio_Skip(1);
+                        }
                         for (;;) {
                             ELF_Section * addr_sec = NULL;
                             ELF_Section * size_sec = NULL;
@@ -1096,6 +1131,9 @@ static void load_addr_ranges(ELF_Section * debug_info) {
                             if (addr == 0 && size == 0 && dio_GetPos() + addr_size * 2 > next) break;
                             if (size != 0) add_addr_range(addr_sec, sCompUnit, addr, size);
                         }
+                    }
+                    else {
+                        trace(LOG_ELF, "Ignoring entry in .debug_aranges section: unsupported version.");
                     }
                     dio_SetPos(next);
                 }
@@ -1199,6 +1237,21 @@ static int cmp_pub_objects(ObjectInfo * x, ObjectInfo * y) {
         DOIF_const_value;
 
     if ((x->mFlags & flags) != (y->mFlags & flags)) return 0;
+    if (x->mParent != y->mParent) {
+        ObjectInfo * px = x->mParent;
+        ObjectInfo * py = y->mParent;
+        for (;;) {
+            if (px == NULL || py == NULL) return 0;
+            if (px->mTag != py->mTag) return 0;
+            if (px->mTag != TAG_namespace) break;
+            if (px->mName != py->mName) {
+                if (px->mName == NULL || py->mName == NULL) return 0;
+                if (strcmp(px->mName, py->mName) != 0) return 0;
+            }
+            px = px->mParent;
+            py = py->mParent;
+        }
+    }
     switch (x->mTag) {
     case TAG_base_type:
     case TAG_fund_type:
@@ -2017,30 +2070,31 @@ DWARFCache * get_dwarf_cache(ELF_File * file) {
     return Cache;
 }
 
-static void add_dir(CompUnit * Unit, char * Name) {
-    if (Unit->mDirsCnt >= Unit->mDirsMax) {
-        Unit->mDirsMax = Unit->mDirsMax == 0 ? 16 : Unit->mDirsMax * 2;
-        Unit->mDirs = (char **)loc_realloc(Unit->mDirs, sizeof(char *) * Unit->mDirsMax);
+static void add_dir(CompUnit * unit, char * name) {
+    if (unit->mDirsCnt >= unit->mDirsMax) {
+        unit->mDirsMax = unit->mDirsMax == 0 ? 16 : unit->mDirsMax * 2;
+        unit->mDirs = (char **)loc_realloc(unit->mDirs, sizeof(char *) * unit->mDirsMax);
     }
-    Unit->mDirs[Unit->mDirsCnt++] = Name;
+    unit->mDirs[unit->mDirsCnt++] = name;
 }
 
-static void add_file(CompUnit * Unit, FileInfo * file) {
+static void add_file(FileInfo * file) {
+    CompUnit * unit = file->mCompUnit;
     file->mNameHash = calc_file_name_hash(file->mName);
-    if (Unit->mFilesCnt >= Unit->mFilesMax) {
-        Unit->mFilesMax = Unit->mFilesMax == 0 ? 16 : Unit->mFilesMax * 2;
-        Unit->mFiles = (FileInfo *)loc_realloc(Unit->mFiles, sizeof(FileInfo) * Unit->mFilesMax);
+    if (unit->mFilesCnt >= unit->mFilesMax) {
+        unit->mFilesMax = unit->mFilesMax == 0 ? 16 : unit->mFilesMax * 2;
+        unit->mFiles = (FileInfo *)loc_realloc(unit->mFiles, sizeof(FileInfo) * unit->mFilesMax);
     }
-    if (file->mDir == NULL) file->mDir = Unit->mDir;
-    Unit->mFiles[Unit->mFilesCnt++] = *file;
+    if (file->mDir == NULL) file->mDir = unit->mDir;
+    unit->mFiles[unit->mFilesCnt++] = *file;
 }
 
-static void add_state(CompUnit * Unit, LineNumbersState * state) {
-    if (state->mFile >= Unit->mFilesCnt) {
+static void add_state(CompUnit * unit, LineNumbersState * state) {
+    if (state->mFile >= unit->mFilesCnt) {
         /* Workaround: Diab compiler generates invalid file indices for an empty compilation unit */
         return;
     }
-    if (Unit->mFiles[state->mFile].mAreaCnt++ == 0) {
+    if (unit->mFiles[state->mFile].mAreaCnt++ == 0) {
         /* Workaround: compilers don't produce mapping for first lines in a source file.
          * Such mapping is needed, for example, for re-positioning of source line breakpoints.
          * We add artificial entry for that.
@@ -2051,13 +2105,27 @@ static void add_state(CompUnit * Unit, LineNumbersState * state) {
         s.mFile = state->mFile;
         s.mSection = state->mSection;
         s.mAddress = state->mAddress;
-        add_state(Unit, &s);
+        add_state(unit, &s);
     }
-    if (Unit->mStatesCnt >= Unit->mStatesMax) {
-        Unit->mStatesMax = Unit->mStatesMax == 0 ? 128 : Unit->mStatesMax * 2;
-        Unit->mStates = (LineNumbersState *)loc_realloc(Unit->mStates, sizeof(LineNumbersState) * Unit->mStatesMax);
+    if (unit->mStatesCnt > 0) {
+        /* Workaround: malformed gnu-8.1.0.0 line info when -gstatement-frontiers is used.
+         * See https://bugs.eclipse.org/bugs/show_bug.cgi?id=544359
+         */
+        LineNumbersState * last = unit->mStates + unit->mStatesCnt - 1;
+        if (last->mAddress == state->mAddress && last->mSection == state->mSection &&
+            last->mFile == state->mFile && last->mLine == state->mLine && last->mColumn == state->mColumn &&
+            (last->mFlags & ~(LINE_IsStmt | LINE_BasicBlock)) == state->mFlags) {
+            last->mISA = state->mISA;
+            last->mOpIndex = state->mOpIndex;
+            last->mDiscriminator = state->mDiscriminator;
+            return;
+        }
     }
-    Unit->mStates[Unit->mStatesCnt++] = *state;
+    if (unit->mStatesCnt >= unit->mStatesMax) {
+        unit->mStatesMax = unit->mStatesMax == 0 ? 128 : unit->mStatesMax * 2;
+        unit->mStates = (LineNumbersState *)loc_realloc(unit->mStates, sizeof(LineNumbersState) * unit->mStatesMax);
+    }
+    unit->mStates[unit->mStatesCnt++] = *state;
 }
 
 static int state_address_comparator(const void * x1, const void * x2) {
@@ -2119,11 +2187,24 @@ static void compute_reverse_lookup_indices(DWARFCache * Cache, CompUnit * Unit) 
         Cache->mFileInfoHash = (FileInfo **)loc_alloc_zero(sizeof(FileInfo *) * Cache->mFileInfoHashSize);
     }
     for (i = 0; i < Unit->mFilesCnt; i++) {
-        FileInfo * File = Unit->mFiles + i;
-        unsigned h = File->mNameHash % Cache->mFileInfoHashSize;
-        File->mCompUnit = Unit;
-        File->mNextInHash = Cache->mFileInfoHash[h];
-        Cache->mFileInfoHash[h] = File;
+        FileInfo * file = Unit->mFiles + i;
+        unsigned h = file->mNameHash % Cache->mFileInfoHashSize;
+        FileInfo * list = Cache->mFileInfoHash[h];
+        assert(file->mCompUnit == Unit);
+        if (file->mAreaCnt == 0) continue;
+        /* Check for duplicate entries */
+        while (list != NULL) {
+            assert(h == list->mNameHash % Cache->mFileInfoHashSize);
+            if (file->mNameHash == list->mNameHash && file->mCompUnit == list->mCompUnit && strcmp(file->mName, list->mName) == 0) {
+                if (file->mDir && list->mDir && strcmp(file->mDir, list->mDir) == 0) break;
+                if (file->mDir == list->mDir) break;
+            }
+            list = list->mNextInHash;
+        }
+        if (list == NULL) {
+            file->mNextInHash = Cache->mFileInfoHash[h];
+            Cache->mFileInfoHash[h] = file;
+        }
     }
 }
 
@@ -2178,9 +2259,9 @@ static void load_line_numbers_v2(CompUnit * Unit, U8_T unit_size, int dwarf64) {
 
     /* Read directory names */
     for (;;) {
-        char * Name = dio_ReadString();
-        if (Name == NULL) break;
-        add_dir(Unit, Name);
+        char * name = dio_ReadString();
+        if (name == NULL) break;
+        add_dir(Unit, name);
     }
 
     /* Read source files info */
@@ -2192,9 +2273,10 @@ static void load_line_numbers_v2(CompUnit * Unit, U8_T unit_size, int dwarf64) {
         if (file.mName == NULL) break;
         dir = dio_ReadULEB128();
         if (dir > 0 && dir <= Unit->mDirsCnt) file.mDir = Unit->mDirs[dir - 1];
+        file.mCompUnit = Unit;
         file.mModTime = dio_ReadULEB128();
         file.mSize = dio_ReadULEB128();
-        add_file(Unit, &file);
+        add_file(&file);
     }
 
     if (header_pos + header_size != dio_GetPos()) {
@@ -2235,9 +2317,10 @@ static void load_line_numbers_v2(CompUnit * Unit, U8_T unit_size, int dwarf64) {
                 file.mName = dio_ReadString();
                 dir = dio_ReadULEB128();
                 if (dir > 0 && dir <= Unit->mDirsCnt) file.mDir = Unit->mDirs[dir - 1];
+                file.mCompUnit = Unit;
                 file.mModTime = dio_ReadULEB128();
                 file.mSize = dio_ReadULEB128();
-                add_file(Unit, &file);
+                add_file(&file);
                 break;
             }
             case DW_LNE_end_sequence:
@@ -2312,7 +2395,8 @@ static void load_line_numbers_v2(CompUnit * Unit, U8_T unit_size, int dwarf64) {
 void load_line_numbers(CompUnit * Unit) {
     Trap trap;
     DWARFCache * Cache = (DWARFCache *)Unit->mFile->dwarf_dt_cache;
-    ELF_Section * LineInfoSection = Unit->mDesc.mVersion <= 1 ? Cache->mDebugLineV1 : Cache->mDebugLineV2;
+    ELF_Section * LineInfoSection = Unit->mLineInfoSection;
+    if (LineInfoSection == NULL) LineInfoSection = Unit->mDesc.mVersion <= 1 ? Cache->mDebugLineV1 : Cache->mDebugLineV2;
     if (LineInfoSection == NULL) return;
     if (Unit->mLineInfoLoaded) return;
     if (elf_load(LineInfoSection)) exception(errno);
@@ -2321,9 +2405,10 @@ void load_line_numbers(CompUnit * Unit) {
         U8_T unit_size = 0;
         FileInfo file;
         memset(&file, 0, sizeof(file));
+        file.mCompUnit = Unit;
         file.mDir = Unit->mDir;
         file.mName = Unit->mObject->mName;
-        add_file(Unit, &file);
+        add_file(&file);
         /* Read header */
         unit_size = dio_ReadU4();
         if (Unit->mDesc.mVersion <= 1) {
