@@ -1515,7 +1515,7 @@ static void search_regions(MemoryMap * map, ContextAddress addr0, ContextAddress
 }
 
 int elf_get_map(Context * ctx, ContextAddress addr0, ContextAddress addr1, MemoryMap * map) {
-    unsigned i;
+    unsigned i, j;
     map->region_cnt = 0;
     ctx = context_get_group(ctx, CONTEXT_GROUP_PROCESS);
 #if ENABLE_MemoryMap
@@ -1548,8 +1548,8 @@ int elf_get_map(Context * ctx, ContextAddress addr0, ContextAddress addr1, Memor
                 m->file_name != NULL && r->file_name != NULL && strcmp(m->file_name, r->file_name) == 0) {
             /* Ambiguity: overlapping regions */
             ELF_File * elf = elf_open(r->file_name);
-            for (i = 0; i < elf->pheader_cnt; i++) {
-                ELF_PHeader * p = elf->pheaders + i;
+            for (j = 0; j < elf->pheader_cnt; j++) {
+                ELF_PHeader * p = elf->pheaders + j;
                 if (p->type == PT_LOAD && p->offset == m->file_offs && p->mem_size < m->size) {
                     m->file_size = p->mem_size;
                     m->size = p->mem_size;
