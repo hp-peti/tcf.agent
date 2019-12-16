@@ -1548,6 +1548,8 @@ int elf_get_map(Context * ctx, ContextAddress addr0, ContextAddress addr1, Memor
                 m->file_name != NULL && r->file_name != NULL && strcmp(m->file_name, r->file_name) == 0) {
             /* Ambiguity: overlapping regions */
             ELF_File * elf = elf_open(r->file_name);
+            if (elf == NULL)                                /* MOVIDIUS */
+                continue;                                   /* MOVIDIUS */
             for (j = 0; j < elf->pheader_cnt; j++) {
                 ELF_PHeader * p = elf->pheaders + j;
                 if (p->type == PT_LOAD && p->offset == m->file_offs && p->mem_size < m->size) {

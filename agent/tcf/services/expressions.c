@@ -47,6 +47,7 @@
 #include <tcf/services/funccall.h>
 #include <tcf/services/stacktrace.h>
 #include <tcf/services/memoryservice.h>
+#include <tcf/services/memorymap.h>
 #include <tcf/services/breakpoints.h>
 #include <tcf/services/registers.h>
 #include <tcf/services/expressions.h>
@@ -1171,6 +1172,89 @@ static unsigned flag_count(SYM_FLAGS flags) {
 }
 #endif /* ENABLE_Symbols */
 
+#if ENABLE_MemoryMap
+int expression_memory_maps_retrieved = 0;
+static MemoryMap * expression_client_map;
+static MemoryMap * expression_target_map;
+
+static unsigned find_region_index_by_address(ContextAddress address, MemoryMap *memmap)
+{
+    if (memmap != NULL) {
+        unsigned i;
+        for (i = 0; i < memmap->region_cnt; ++i) {
+            MemoryRegion *rgn = memmap->regions + i;
+            if (rgn->addr <= address && address < rgn->addr + rgn->size)
+                return i;
+        }
+    }
+
+    return UINT_MAX;
+}
+
+/**
+ * Determine relative importance of symbols based on location in memory map.
+ * 1. Symbols with address have priority over ones without.
+ * 2. Symbols located in client map have priority over ones located in target map
+ * 3. Symbols mapped at lower indices in same map have higher priority.
+ * */
+static int memory_mapping_order(Symbol *left_sym, Symbol *right_sym)
+{
+    ContextAddress left_address;
+    ContextAddress right_address;
+    int left_has_address;
+    int right_has_address;
+    unsigned left_index;
+    unsigned left_target_index;
+    unsigned right_index;
+    unsigned right_target_index;
+
+    left_has_address = get_symbol_address(left_sym, &left_address) >= 0;
+    right_has_address = get_symbol_address(right_sym, &right_address) >= 0;
+    errno = 0;
+
+    if (!left_has_address && !right_has_address)
+        return 0;
+
+    if (left_address == right_address)
+        return 0;
+
+    if (left_has_address && !right_has_address)
+        return -1;
+
+    if (!left_has_address && right_has_address)
+        return +1;
+
+    if (!expression_memory_maps_retrieved) {
+        memory_map_get(expression_context, &expression_client_map, &expression_target_map);
+        expression_memory_maps_retrieved = 1;
+    }
+
+    left_index = find_region_index_by_address(left_address, expression_client_map);
+    right_index = find_region_index_by_address(right_address, expression_client_map);
+
+    if (left_index < right_index)
+        return -1;
+
+    if (left_index > right_index)
+        return +1;
+
+    left_index = find_region_index_by_address(left_address, expression_target_map);
+    right_index = find_region_index_by_address(right_address, expression_target_map);
+
+    if (left_index < right_index)
+        return -1;
+
+    if (left_index > right_index)
+        return +1;
+
+    return 0;
+}
+
+
+#else
+static int memory_mapping_order(Symbol *, Symbol *) { return 0; }
+#endif
+
 static int identifier(int mode, Value * scope, char * name, SYM_FLAGS flags, Value * v) {
     ini_value(v);
     if (scope == NULL) {
@@ -1260,7 +1344,11 @@ static int identifier(int mode, Value * scope, char * name, SYM_FLAGS flags, Val
             for (i = 1; i < cnt; i++) {
                 SYM_FLAGS nxt_flags = (get_all_symbol_flags(list[i]) ^ flags) & flag_mask;
                 if (val_cnt > 0 && (nxt_flags & cmx_type) != 0) continue;
-                if (flag_count(nxt_flags) >= flag_count(sym_flags)) continue;
+                if (flag_count(nxt_flags) > flag_count(sym_flags)) continue;
+                if (flag_count(nxt_flags) == flag_count(sym_flags)) {
+                    if (memory_mapping_order(sym, list[i]) <= 0)
+                        continue;
+                }
                 sym_flags = nxt_flags;
                 sym = list[i];
             }
@@ -3818,6 +3906,9 @@ static void expression(int mode, Value * v) {
 
 static int evaluate_script(int mode, char * s, int load, Value * v) {
     Trap trap;
+#if ENABLE_MemoryMap
+    expression_memory_maps_retrieved = 0;
+#endif
 
     expression_has_func_call = 0;
     if (set_trap(&trap)) {

@@ -1,0 +1,425 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug64|Win32">
+      <Configuration>Debug64</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug64|x64">
+      <Configuration>Debug64</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release64|Win32">
+      <Configuration>Release64</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release64|x64">
+      <Configuration>Release64</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{060378AE-E275-11E4-9E3A-BCEE7B0346A2}</ProjectGuid>
+    <RootNamespace>libtcf</RootNamespace>
+    <Keyword>Win32Proj</Keyword>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v140_xp</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release64|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v140_xp</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v140</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release64|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v140</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v140_xp</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug64|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v140_xp</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v140</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug64|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v140</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\..\mvt-build-sys\vs\moviToolsRelease.props" />
+    <Import Project="..\config\preprocessor.props" />
+    <Import Project="config-include.props" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release64|Win32'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\..\mvt-build-sys\vs\moviToolsRelease.props" />
+    <Import Project="..\config\preprocessor.props" />
+    <Import Project="config-include.props" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\..\mvt-build-sys\vs\moviToolsRelease.props" />
+    <Import Project="..\config\preprocessor.props" />
+    <Import Project="config-include.props" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release64|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\..\mvt-build-sys\vs\moviToolsRelease.props" />
+    <Import Project="..\config\preprocessor.props" />
+    <Import Project="config-include.props" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\..\mvt-build-sys\vs\moviToolsDebug.props" />
+    <Import Project="..\..\mvt-build-sys\vs\CrtDebugMapAlloc.props" />
+    <Import Project="..\config\preprocessor.props" />
+    <Import Project="config-include.props" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug64|Win32'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\..\mvt-build-sys\vs\moviToolsDebug.props" />
+    <Import Project="..\..\mvt-build-sys\vs\CrtDebugMapAlloc.props" />
+    <Import Project="..\config\preprocessor.props" />
+    <Import Project="config-include.props" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\..\mvt-build-sys\vs\moviToolsDebug.props" />
+    <Import Project="..\..\mvt-build-sys\vs\CrtDebugMapAlloc.props" />
+    <Import Project="..\config\preprocessor.props" />
+    <Import Project="config-include.props" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug64|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\..\mvt-build-sys\vs\moviToolsDebug.props" />
+    <Import Project="..\..\mvt-build-sys\vs\CrtDebugMapAlloc.props" />
+    <Import Project="..\config\preprocessor.props" />
+    <Import Project="config-include.props" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>11.0.61030.0</_ProjectFileVersion>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <CompileAs>Default</CompileAs>
+      <DisableSpecificWarnings>4005;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <ObjectFileName>$(IntDir)libtcf\</ObjectFileName>
+    </ClCompile>
+    <Lib>
+      <AdditionalDependencies>Iphlpapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug64|Win32'">
+    <ClCompile>
+      <CompileAs>Default</CompileAs>
+      <DisableSpecificWarnings>4005;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <ObjectFileName>$(IntDir)libtcf\</ObjectFileName>
+    </ClCompile>
+    <Lib>
+      <AdditionalDependencies>Iphlpapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <CompileAs>Default</CompileAs>
+      <DisableSpecificWarnings>4005;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <ObjectFileName>$(IntDir)libtcf\</ObjectFileName>
+    </ClCompile>
+    <Lib>
+      <AdditionalDependencies>Iphlpapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug64|x64'">
+    <ClCompile>
+      <CompileAs>Default</CompileAs>
+      <DisableSpecificWarnings>4005;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <ObjectFileName>$(IntDir)libtcf\</ObjectFileName>
+    </ClCompile>
+    <Lib>
+      <AdditionalDependencies>Iphlpapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <CompileAs>Default</CompileAs>
+      <ObjectFileName>$(IntDir)libtcf\</ObjectFileName>
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+    </ClCompile>
+    <Lib>
+      <AdditionalDependencies>Iphlpapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release64|Win32'">
+    <ClCompile>
+      <CompileAs>Default</CompileAs>
+      <ObjectFileName>$(IntDir)libtcf\</ObjectFileName>
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+    </ClCompile>
+    <Lib>
+      <AdditionalDependencies>Iphlpapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <CompileAs>Default</CompileAs>
+      <ObjectFileName>$(IntDir)libtcf\</ObjectFileName>
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+    </ClCompile>
+    <Lib>
+      <AdditionalDependencies>Iphlpapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release64|x64'">
+    <ClCompile>
+      <CompileAs>Default</CompileAs>
+      <ObjectFileName>$(IntDir)libtcf\</ObjectFileName>
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+    </ClCompile>
+    <Lib>
+      <AdditionalDependencies>Iphlpapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="agent\system\Windows\tcf\pthreads-win32.c" />
+    <ClCompile Include="agent\tcf\framework\client.c" />
+    <ClCompile Include="agent\tcf\framework\compression.c" />
+    <ClCompile Include="agent\tcf\main\framework.c" />
+    <ClCompile Include="agent\tcf\services\breakpoints.c" />
+    <ClCompile Include="agent\tcf\services\contextquery.c" />
+    <ClCompile Include="agent\tcf\services\contextreset.c" />
+    <ClCompile Include="agent\tcf\services\diagnostics.c" />
+    <ClCompile Include="agent\tcf\services\disassembly.c" />
+    <ClCompile Include="agent\tcf\services\discovery.c" />
+    <ClCompile Include="agent\tcf\services\discovery_udp.c" />
+    <ClCompile Include="agent\tcf\services\dprintf.c" />
+    <ClCompile Include="agent\tcf\services\dwarfcache.c" />
+    <ClCompile Include="agent\tcf\services\dwarfecomp.c" />
+    <ClCompile Include="agent\tcf\services\dwarfexpr.c" />
+    <ClCompile Include="agent\tcf\services\dwarfframe.c" />
+    <ClCompile Include="agent\tcf\services\dwarfio.c" />
+    <ClCompile Include="agent\tcf\services\dwarfreloc.c" />
+    <ClCompile Include="agent\tcf\services\elf-loader.c" />
+    <ClCompile Include="agent\tcf\services\elf-symbols.c" />
+    <ClCompile Include="agent\tcf\services\expressions.c" />
+    <ClCompile Include="agent\tcf\services\filesystem.c" />
+    <ClCompile Include="agent\tcf\services\funccall.c" />
+    <ClCompile Include="agent\tcf\services\linenumbers.c" />
+    <ClCompile Include="agent\tcf\services\linenumbers_elf.c" />
+    <ClCompile Include="agent\tcf\services\linenumbers_mux.c" />
+    <ClCompile Include="agent\tcf\services\linenumbers_proxy.c" />
+    <ClCompile Include="agent\tcf\services\linenumbers_win32.c" />
+    <ClCompile Include="agent\tcf\services\memorymap.c" />
+    <ClCompile Include="agent\tcf\services\memoryservice.c" />
+    <ClCompile Include="agent\tcf\services\pathmap.c" />
+    <ClCompile Include="agent\tcf\services\portforward_proxy.c" />
+    <ClCompile Include="agent\tcf\services\portforward_service.c" />
+    <ClCompile Include="agent\tcf\services\processes.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release64|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release64|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug64|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug64|x64'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="agent\tcf\services\profiler.c" />
+    <ClCompile Include="agent\tcf\services\profiler_sst.c" />
+    <ClCompile Include="agent\tcf\services\registers.c" />
+    <ClCompile Include="agent\tcf\services\runctrl.c" />
+    <ClCompile Include="agent\tcf\services\stacktrace.c" />
+    <ClCompile Include="agent\tcf\services\streamsservice.c" />
+    <ClCompile Include="agent\tcf\services\symbols.c" />
+    <ClCompile Include="agent\tcf\services\symbols_common.c" />
+    <ClCompile Include="agent\tcf\services\symbols_elf.c" />
+    <ClCompile Include="agent\tcf\services\symbols_mux.c" />
+    <ClCompile Include="agent\tcf\services\symbols_proxy.c" />
+    <ClCompile Include="agent\tcf\services\symbols_win32.c" />
+    <ClCompile Include="agent\tcf\services\sysmon.c" />
+    <ClCompile Include="agent\tcf\services\tcf_elf.c" />
+    <ClCompile Include="agent\tcf\services\terminals.c" />
+    <ClCompile Include="agent\tcf\services\vm.c" />
+    <ClCompile Include="agent\tcf\framework\asyncreq.c" />
+    <ClCompile Include="agent\tcf\framework\base64.c" />
+    <ClCompile Include="agent\tcf\framework\cache.c" />
+    <ClCompile Include="agent\tcf\framework\channel.c" />
+    <ClCompile Include="agent\tcf\framework\channel_pipe.c" />
+    <ClCompile Include="agent\tcf\framework\channel_tcp.c" />
+    <ClCompile Include="agent\tcf\framework\context-dispatcher.c" />
+    <ClCompile Include="agent\tcf\framework\context.c" />
+    <ClCompile Include="agent\tcf\framework\cpudefs.c" />
+    <ClCompile Include="dummy.c" />
+    <ClCompile Include="agent\tcf\framework\errors.c" />
+    <ClCompile Include="agent\tcf\framework\events.c" />
+    <ClCompile Include="agent\tcf\framework\exceptions.c" />
+    <ClCompile Include="agent\tcf\framework\inputbuf.c" />
+    <ClCompile Include="agent\tcf\framework\ip_ifc.c" />
+    <ClCompile Include="agent\tcf\framework\json.c" />
+    <ClCompile Include="agent\tcf\framework\mdep.c" />
+    <ClCompile Include="agent\tcf\framework\myalloc.c" />
+    <ClCompile Include="agent\tcf\framework\outputbuf.c" />
+    <ClCompile Include="agent\tcf\framework\peer.c" />
+    <ClCompile Include="agent\tcf\framework\plugins.c" />
+    <ClCompile Include="agent\tcf\framework\protocol.c" />
+    <ClCompile Include="agent\tcf\framework\proxy.c" />
+    <ClCompile Include="agent\tcf\framework\shutdown.c" />
+    <ClCompile Include="agent\tcf\framework\signames.c" />
+    <ClCompile Include="agent\tcf\framework\sigsets.c" />
+    <ClCompile Include="agent\tcf\framework\streams.c" />
+    <ClCompile Include="agent\tcf\framework\trace.c" />
+    <ClCompile Include="agent\tcf\framework\waitpid.c" />
+    <ClCompile Include="agent\tcf\main\cmdline.c" />
+    <ClCompile Include="agent\tcf\main\server.c" />
+    <ClCompile Include="agent\tcf\main\services.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="agent\system\Windows\tcf\pthreads-win32.h" />
+    <ClInclude Include="agent\tcf\framework\client.h" />
+    <ClInclude Include="agent\tcf\framework\compression.h" />
+    <ClInclude Include="agent\tcf\framework\mdep-ptrace.h" />
+    <ClInclude Include="agent\tcf\main\framework.h" />
+    <ClInclude Include="agent\tcf\services\breakpoints-ext.h" />
+    <ClInclude Include="agent\tcf\services\breakpoints.h" />
+    <ClInclude Include="agent\tcf\services\contextquery.h" />
+    <ClInclude Include="agent\tcf\services\contextreset.h" />
+    <ClInclude Include="agent\tcf\services\diagnostics.h" />
+    <ClInclude Include="agent\tcf\services\disassembly.h" />
+    <ClInclude Include="agent\tcf\services\discovery.h" />
+    <ClInclude Include="agent\tcf\services\discovery_udp.h" />
+    <ClInclude Include="agent\tcf\services\dprintf.h" />
+    <ClInclude Include="agent\tcf\services\dwarf.h" />
+    <ClInclude Include="agent\tcf\services\dwarfcache.h" />
+    <ClInclude Include="agent\tcf\services\dwarfecomp-ext.h" />
+    <ClInclude Include="agent\tcf\services\dwarfecomp.h" />
+    <ClInclude Include="agent\tcf\services\dwarfexpr.h" />
+    <ClInclude Include="agent\tcf\services\dwarfframe.h" />
+    <ClInclude Include="agent\tcf\services\dwarfio.h" />
+    <ClInclude Include="agent\tcf\services\dwarfreloc-ext.h" />
+    <ClInclude Include="agent\tcf\services\dwarfreloc.h" />
+    <ClInclude Include="agent\tcf\services\elf-loader.h" />
+    <ClInclude Include="agent\tcf\services\elf-symbols-ext.h" />
+    <ClInclude Include="agent\tcf\services\elf-symbols.h" />
+    <ClInclude Include="agent\tcf\services\expressions.h" />
+    <ClInclude Include="agent\tcf\services\filesystem.h" />
+    <ClInclude Include="agent\tcf\services\funccall.h" />
+    <ClInclude Include="agent\tcf\services\linenumbers.h" />
+    <ClInclude Include="agent\tcf\services\linenumbers_elf-ext.h" />
+    <ClInclude Include="agent\tcf\services\linenumbers_mux.h" />
+    <ClInclude Include="agent\tcf\services\memorymap.h" />
+    <ClInclude Include="agent\tcf\services\memoryservice.h" />
+    <ClInclude Include="agent\tcf\services\pathmap.h" />
+    <CustomBuild Include="agent\tcf\services\processes.h">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug64|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug64|x64'">true</ExcludedFromBuild>
+    </CustomBuild>
+    <ClInclude Include="agent\tcf\services\portforward_proxy.h" />
+    <ClInclude Include="agent\tcf\services\portforward_service.h" />
+    <ClInclude Include="agent\tcf\services\profiler.h" />
+    <ClInclude Include="agent\tcf\services\profiler_sst.h" />
+    <ClInclude Include="agent\tcf\services\registers.h" />
+    <ClInclude Include="agent\tcf\services\runctrl-ext.h" />
+    <ClInclude Include="agent\tcf\services\runctrl.h" />
+    <ClInclude Include="agent\tcf\services\stacktrace-ext.h" />
+    <ClInclude Include="agent\tcf\services\stacktrace.h" />
+    <ClInclude Include="agent\tcf\services\streamsservice.h" />
+    <ClInclude Include="agent\tcf\services\symbols.h" />
+    <ClInclude Include="agent\tcf\services\symbols_mux.h" />
+    <ClInclude Include="agent\tcf\services\sysmon.h" />
+    <ClInclude Include="agent\tcf\services\tcf_elf.h" />
+    <ClInclude Include="agent\tcf\services\terminals.h" />
+    <ClInclude Include="agent\tcf\services\vm.h" />
+    <ClInclude Include="agent\tcf\framework\asyncreq.h" />
+    <ClInclude Include="agent\tcf\framework\base64.h" />
+    <ClInclude Include="agent\tcf\framework\cache.h" />
+    <ClInclude Include="agent\tcf\framework\channel.h" />
+    <ClInclude Include="agent\tcf\framework\channel_pipe.h" />
+    <ClInclude Include="agent\tcf\framework\channel_tcp.h" />
+    <ClInclude Include="agent\tcf\framework\context-dispatcher-ext.h" />
+    <ClInclude Include="agent\tcf\framework\context-dispatcher.h" />
+    <ClInclude Include="agent\tcf\framework\context-ext.h" />
+    <ClInclude Include="agent\tcf\framework\context-mux-ext.h" />
+    <ClInclude Include="agent\tcf\framework\context-mux.h" />
+    <ClInclude Include="agent\tcf\framework\context.h" />
+    <ClInclude Include="agent\tcf\framework\cpudefs-ext.h" />
+    <ClInclude Include="agent\tcf\framework\cpudefs-mdep-mux.h" />
+    <ClInclude Include="agent\tcf\framework\cpudefs-mux.h" />
+    <ClInclude Include="agent\tcf\framework\cpudefs.h" />
+    <ClInclude Include="agent\tcf\framework\errors.h" />
+    <ClInclude Include="agent\tcf\framework\events.h" />
+    <ClInclude Include="agent\tcf\framework\exceptions.h" />
+    <ClInclude Include="agent\tcf\framework\inputbuf.h" />
+    <ClInclude Include="agent\tcf\framework\ip_ifc.h" />
+    <ClInclude Include="agent\tcf\framework\json.h" />
+    <ClInclude Include="agent\tcf\framework\link.h" />
+    <ClInclude Include="agent\tcf\framework\mdep-fs.h" />
+    <ClInclude Include="agent\tcf\framework\mdep-inet.h" />
+    <ClInclude Include="agent\tcf\framework\mdep-threads.h" />
+    <ClInclude Include="agent\tcf\framework\mdep.h" />
+    <ClInclude Include="agent\tcf\framework\myalloc.h" />
+    <ClInclude Include="agent\tcf\framework\outputbuf.h" />
+    <ClInclude Include="agent\tcf\framework\peer.h" />
+    <ClInclude Include="agent\tcf\framework\pid-hash.h" />
+    <ClInclude Include="agent\tcf\framework\plugins.h" />
+    <ClInclude Include="agent\tcf\framework\protocol.h" />
+    <ClInclude Include="agent\tcf\framework\proxy.h" />
+    <ClInclude Include="agent\tcf\framework\shutdown.h" />
+    <ClInclude Include="agent\tcf\framework\signames.h" />
+    <ClInclude Include="agent\tcf\framework\sigsets.h" />
+    <ClInclude Include="agent\tcf\framework\streams.h" />
+    <ClInclude Include="agent\tcf\framework\tcf.h" />
+    <ClInclude Include="agent\tcf\framework\trace.h" />
+    <ClInclude Include="agent\tcf\framework\waitpid.h" />
+    <ClInclude Include="agent\tcf\main\cmdline.h" />
+    <ClInclude Include="agent\tcf\main\server.h" />
+    <ClInclude Include="agent\tcf\main\services.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

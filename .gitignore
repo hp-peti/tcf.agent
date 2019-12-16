@@ -47,3 +47,5 @@
 .project
 .cproject
 .settings
+
+/Binaries/
